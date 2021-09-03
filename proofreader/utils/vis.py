@@ -29,14 +29,14 @@ def label_data(vol, seg):
     return labeled
 
 
-def view_volume(volume, fig_size=6.5):
+def view_volume(volume, display, fig_size=6.5):
     length = volume.shape[0]
 
     # set up
     fig = plt.figure()
     fig.set_size_inches(fig_size, fig_size)
     axes = fig.add_subplot()
-    hfig = IPython.display(fig, display_id=True)
+    hfig = display(fig, display_id=True)
 
     # display
     for i in range(length):
@@ -70,7 +70,7 @@ def view_segmentation(seg, i=0, fig_size=10):
     plt.show()
 
 
-def grid_vol(vol, sz=100):
+def grid_volume(vol, sz=100):
     num_sl = vol.shape[0]
     r = math.ceil(math.sqrt(num_sl))
     fig, axarr = plt.subplots(r, r)
