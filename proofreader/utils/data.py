@@ -37,7 +37,7 @@ def crop_where(vol, condition):
     crop_slice = []
     for cord in np.where(condition):
         amin, amax = np.min(cord), np.max(cord)
-        crop_slice.append(slice(amin, amax))
+        crop_slice.append(slice(amin, amax+1))
     crop_slice = tuple(crop_slice)
     cropped = vol[crop_slice]
     return cropped

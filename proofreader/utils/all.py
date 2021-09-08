@@ -2,6 +2,7 @@ import math
 import torch
 import gc
 
+
 def print_all_live_tensors():
     print('===========================TENSORS===========================')
     for obj in gc.get_objects():
@@ -30,3 +31,9 @@ def split_int(i, bias='left'):
         return (big, sm)
     elif bias == 'right':
         return (sm, big)
+
+
+def list_remove(arr, rm):
+    if not isinstance(rm, list):
+        rm = [rm]
+    return [x for x in arr if not x in rm]
