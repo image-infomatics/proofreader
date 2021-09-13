@@ -70,7 +70,7 @@ def view_segmentation(seg, i=0, fig_size=10):
     plt.show()
 
 
-def grid_volume(vol, sz=100):
+def grid_volume(vol, sz=20):
     num_sl = vol.shape[0]
     r = math.ceil(math.sqrt(num_sl))
     fig, axarr = plt.subplots(r, r)

@@ -43,8 +43,6 @@ def crop_where(vol, condition):
     return cropped
 
 # get the min and max indices where conditions is true
-
-
 def arg_where_range(condition):
     where_indices = np.argwhere(condition)
     mins, maxs = np.amin(where_indices, axis=0), np.amax(where_indices, axis=0)
@@ -52,7 +50,6 @@ def arg_where_range(condition):
 
  # return a circular mask at center with radius
  # https://newbedev.com/how-can-i-create-a-circular-mask-for-a-numpy-array
-
 
 def circular_mask(h, w, center=None, radius=None):
 
@@ -66,3 +63,20 @@ def circular_mask(h, w, center=None, radius=None):
 
     mask = dist_from_center <= radius
     return mask
+
+# get coordinate grid from matrix
+def get_grid_from_matrix(mat):
+    sl = []
+    for d in mat.shape:
+        sl.append(slice(0,d))
+    sl = tuple(sl)
+    return np.mgrid[sl]
+
+# https://stackoverflow.com/questions/11144513/cartesian-product-of-x-and-y-array-points-into-single-array-of-2d-points
+def cartesian_product(*arrays):
+    la = len(arrays)
+    dtype = np.result_type(*arrays)
+    arr = np.empty([len(a) for a in arrays] + [la], dtype=dtype)
+    for i, a in enumerate(np.ix_(*arrays)):
+        arr[...,i] = a
+    return arr.reshape(-1, la)

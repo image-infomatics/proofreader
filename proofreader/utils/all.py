@@ -38,3 +38,6 @@ def list_remove(arr, rm):
     if not isinstance(rm, list):
         rm = [rm]
     return [x for x in arr if not x in rm]
+
+def clamp(n, minn, maxn):
+    return max(min(maxn, n), minn)
