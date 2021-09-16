@@ -73,13 +73,19 @@ def view_segmentation(seg, i=0, fig_size=10):
 def grid_volume(vol, sz=20):
     num_sl = vol.shape[0]
     r = math.ceil(math.sqrt(num_sl))
-    fig, axarr = plt.subplots(r, r)
-    fig.set_size_inches(sz, sz)
-    for i in range(r):
-        for j in range(r):
-            cur = (i*r)+j
-            if cur < num_sl:
-                axarr[i, j].imshow(vol[cur], cmap='gray')
-                axarr[i, j].set_title(cur)
+    if r == 1:
+        fig, axarr = plt.subplots(r, r)
+        fig.set_size_inches(sz, sz)
+        axarr.imshow(vol[0], cmap='gray')
+        axarr.set_title(0)
+    else:
+        fig, axarr = plt.subplots(r, r)
+        fig.set_size_inches(sz, sz)
+        for i in range(r):
+            for j in range(r):
+                cur = (i*r)+j
+                if cur < num_sl:
+                    axarr[i, j].imshow(vol[cur], cmap='gray')
+                    axarr[i, j].set_title(cur)
     plt.axis('off')
     plt.show()

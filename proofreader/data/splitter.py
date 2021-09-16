@@ -1,6 +1,5 @@
 from typing import List
 import numpy as np
-from numpy.lib import unique
 import torch
 import random
 import math
@@ -10,7 +9,7 @@ from proofreader.utils.data import arg_where_range, circular_mask, crop_where
 from proofreader.utils.vis import view_segmentation, grid_volume
 from skimage.color import label2rgb
 from skimage.segmentation import find_boundaries
-import time
+from scipy import ndimage
 
 
 def get_classes_sorted_by_volume(vol, reverse=False, return_counts=False):
@@ -59,7 +58,9 @@ class SplitterDataset(torch.utils.data.Dataset):
                  vols: List,
                  num_slices: int,
                  radius: int,
-                 context_slices: int
+                 context_slices: int,
+                 retry: bool = True,
+                 verbose: bool = False,
                  ):
         """
         Parameters:
@@ -67,6 +68,8 @@ class SplitterDataset(torch.utils.data.Dataset):
             num_slices (int): the number of slices to drop
             radius (int):
             context_slices (int):
+            retry (bool): whether to retry until success if cannot generate example
+            verbose (bool): print warning messages
         """
 
         super().__init__()
@@ -76,6 +79,8 @@ class SplitterDataset(torch.utils.data.Dataset):
         self.num_slices = num_slices
         self.radius = radius
         self.context_slices = context_slices
+        self.retry = retry
+        self.verbose = verbose
         # get classes to use
         length = 0
         for vol in vols:
@@ -120,6 +125,10 @@ class SplitterDataset(torch.utils.data.Dataset):
         z_max_range = zmax-margin-num_slices+1 if example_type else zmax+1
         # margin not needed on bottom
         drop_start = random.randint(zmin+margin, z_max_range)
+
+        # DELETE
+        drop_start = z_max_range
+
         # take min to ensure there is some bottom vol
         drop_end = min(drop_start+num_slices, vol.shape[0]-1)
         top_z_len = min(context_slices, drop_start-zmin)
@@ -146,13 +155,13 @@ class SplitterDataset(torch.utils.data.Dataset):
         # Get midpoint of neurite on 2D top cross section, #
         top_border = top_vol_section_relabeled[-1]
         # use the relabeled top section
-        mins, maxs = arg_where_range(top_border == relabeled_top_c)
-        mp_y, mp_x = [(mi+ma)//2 for mi, ma in zip(mins, maxs)]  # midpoint
+        (com_x, com_y) = ndimage.measurements.center_of_mass(top_border)
+        (com_x, com_y) = round(com_x), round(com_y)
 
         # Find all neurites with distnce D from that point on bottom cross section #
         bot_border = vol[drop_end].copy()  # need copy because we zero
         mask = circular_mask(
-            bot_border.shape[0], bot_border.shape[1], center=(mp_x, mp_y), radius=radius)
+            bot_border.shape[0], bot_border.shape[1], center=(com_y, com_x), radius=radius)
         bot_border[~mask] = 0
         mismatch_classes = list(np.unique(bot_border))
 
@@ -165,8 +174,9 @@ class SplitterDataset(torch.utils.data.Dataset):
             # remove 0 and top class lables
             mismatch_classes = list_remove(mismatch_classes, [0, top_c])
             if len(mismatch_classes) == 0:
-                print(
-                    f'for {example_type} example, class {c}, could not find bottom label within radius, returning none')
+                if self.verbose:
+                    print(
+                        f'(find negative) for {example_type} example, class {c}, cut {drop_start, drop_end} could not find bottom label within radius, returning none')
                 return None
             # maybe could select here based on on cross-sectional volume
             # select bottom neurite class
@@ -179,16 +189,19 @@ class SplitterDataset(torch.utils.data.Dataset):
         # Do connected component relabeling to ensure only one fragment on bottom #
         # The mask and radius are needed for both positive and negative examples #
         # So that after connected components we can pick a fragment near the top neurite #
-        # cc3d.connected_components(bot_vol_section)
-        bot_vol_section_relabeled = bot_vol_section
+
+        # plus minus one is hack to fix bug in cc3d https://github.com/seung-lab/connected-components-3d/issues/74
+        bot_vol_section_relabeled = cc3d.connected_components(bot_vol_section)
+
         bot_border_relabled = bot_vol_section_relabeled[0]
         relabeled_fragments_in_radius = list(
             np.unique(bot_border_relabled[mask]))
         relabeled_fragments_in_radius = list_remove(
             relabeled_fragments_in_radius, 0)
         if len(relabeled_fragments_in_radius) == 0:
-            print(
-                f'for {example_type} example, class {c}, could not find bottom label within radius, returning none')
+            if self.verbose:
+                print(
+                    f'(relabel bot) for {example_type} example, class {c}, cut {drop_start, drop_end}, could not find bottom label within radius, returning none')
             return None
         # take fragment which is in radius
         relabeled_bot_c = random.choice(relabeled_fragments_in_radius)
@@ -196,13 +209,8 @@ class SplitterDataset(torch.utils.data.Dataset):
                                   relabeled_bot_c] = 0
 
         # Build final volume of top and bottom sections #
-        final_vol[0:top_z_len] = top_vol_section_relabeled
+        final_vol[0: top_z_len] = top_vol_section_relabeled
         final_vol[num_slices+top_z_len:] = bot_vol_section_relabeled
-
-        # Take surfaces of vols and final connected components sanity check #
-        # final_vol = find_boundaries(final_vol, mode='inner').astype(np.uint8)
-        # final_vol = cc3d.connected_components(final_vol)
-        # assert len(np.unique(final_vol)) == 3, 'final sample should have 3 labels, n1, n2, 0'
 
         return final_vol
 
@@ -215,11 +223,10 @@ class SplitterDataset(torch.utils.data.Dataset):
                 break
             index -= len_classes
 
-        index = index // 2
-        vol = self.vols[voli]
-        c = self.classes[voli][index]
         label = index % 2 == 0  # label based on even or odd
-
+        vol = self.vols[voli]
+        index = index // 2
+        c = self.classes[voli][index]
         return vol, c, label
 
     def get_example(self, index):
@@ -229,15 +236,23 @@ class SplitterDataset(torch.utils.data.Dataset):
             vol, c, label, self.num_slices, self.radius, self.context_slices)
 
         # if we cant build example, try again with random index
-        if vol_example is None:
+        if self.retry and vol_example is None:
             rand_i = random.randint(0, self.length)
-            print(f'redo on i {rand_i}')
+            if self.verbose:
+                print(f'redo on i {rand_i}')
             return self.get_example(rand_i)
 
         # convert to point cloud
         pc_example = vol_example
 
-        return pc_example
+        return (pc_example, c, label)
+
+    def convert_volumetric_to_point_cloud(self, vol):
+        # Take surfaces of vols and final connected components sanity check #
+        vol = find_boundaries(vol, mode='inner').astype(np.uint8)
+        vol = cc3d.connected_components(vol)
+        assert len(np.unique(vol)
+                   ) == 3, 'final sample should have 3 labels, n1, n2, 0'
 
     def __getitem__(self, index):
         return self.get_example(index)
