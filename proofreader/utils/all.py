@@ -1,7 +1,6 @@
 import math
 import torch
 import gc
-import os
 
 
 def print_all_live_tensors():
@@ -39,5 +38,13 @@ def list_remove(arr, rm):
         rm = [rm]
     return [x for x in arr if not x in rm]
 
+
 def clamp(n, minn, maxn):
     return max(min(maxn, n), minn)
+
+
+class dotdict(dict):
+    """dot.notation access to dictionary attributes"""
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__

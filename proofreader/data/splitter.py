@@ -72,7 +72,7 @@ class SplitterDataset(torch.utils.data.Dataset):
                  num_slices: int,
                  radius: int,
                  context_slices: int,
-                 fix_num_points: int = None,
+                 num_points: int = None,
                  open_vol: bool = True,
                  retry: bool = True,
                  verbose: bool = False,
@@ -84,7 +84,7 @@ class SplitterDataset(torch.utils.data.Dataset):
             num_slices (int or 2-List[a,b]): the number of slices to drop, or range of slices to drop.
             radius (int): radius (voxels) on bottom cross section in which to select second neurite.
             context_slices (int): max number of slice on top and bottom neurites.
-            fix_num_points (int): ensures number of points in pointcloud is exactly this.
+            num_points (int): ensures number of points in pointcloud is exactly this.
             open_vol (bool): whether to get the exterior of the vol as open tube-like manifolds (True) or as closed balloon-like manifolds (False)
                              amounts to removing the interior along the z-axis (True) or for entire vol at once (False).
             retry (bool): whether to retry until success if cannot generate example
@@ -105,7 +105,7 @@ class SplitterDataset(torch.utils.data.Dataset):
         self.num_slices = num_slices
         self.radius = radius
         self.context_slices = context_slices
-        self.fix_num_points = fix_num_points
+        self.num_points = num_points
         self.open_vol = open_vol
         self.retry = retry
         self.verbose = verbose
@@ -261,17 +261,19 @@ class SplitterDataset(torch.utils.data.Dataset):
 
         pc = convert_grid_to_pointcloud(vol)
 
-        if self.fix_num_points is not None:
+        if self.num_points is not None:
             num_points = pc.shape[0]
 
-            # need way to handle, could just retry?
-            if num_points < self.fix_num_points:
+            if num_points < self.num_points:
                 if self.verbose:
                     print(
-                        f'not enough points, need {self.fix_num_points}, have {num_points}')
-                return pc
+                        f'not enough points, need {self.num_points}, have {num_points}, replace sampling to fix')
 
-            pc = random_sample_arr(pc, count=self.fix_num_points)
+                pc = random_sample_arr(
+                    pc, count=self.num_points, replace=True)
+
+            else:
+                pc = random_sample_arr(pc, count=self.num_points)
 
         return pc
 
