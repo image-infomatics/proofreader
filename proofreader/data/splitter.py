@@ -2,13 +2,13 @@ from typing import List
 import numpy as np
 import torch
 import random
-import math
+from einops import rearrange
 import cc3d
 from proofreader.utils.all import list_remove, split_int
-from proofreader.utils.data import arg_where_range, circular_mask, crop_where
+from proofreader.utils.data import random_sample_arr, circular_mask, crop_where
 from proofreader.utils.vis import view_segmentation, grid_volume
 from skimage.color import label2rgb
-from skimage.segmentation import find_boundaries
+from skimage.segmentation import boundaries, find_boundaries
 from scipy import ndimage
 
 
@@ -53,38 +53,69 @@ def get_classes_with_at_least_volume(vol, min_volume):
     return classes[:i]
 
 
+def convert_grid_to_pointcloud(vol, threshold=0, keep_features=False):
+    (sz, sy, sx) = vol.shape
+    # generate all coords in img
+    cords = np.mgrid[0:sz, 0:sy, 0:sx]
+    if keep_features:
+        cords = np.append([vol], cords, axis=0)
+    # select cords where above threshold
+    cords = cords[:, vol > threshold]
+    # array of points representation
+    cords = np.swapaxes(cords, 0, 1)
+    return cords
+
+
 class SplitterDataset(torch.utils.data.Dataset):
     def __init__(self,
                  vols: List,
                  num_slices: int,
                  radius: int,
                  context_slices: int,
+                 fix_num_points: int = None,
+                 open_vol: bool = True,
                  retry: bool = True,
                  verbose: bool = False,
+                 return_vol: str = False
                  ):
         """
         Parameters:
-            vols (List): list of vols to use
-            num_slices (int): the number of slices to drop
-            radius (int):
-            context_slices (int):
+            vols (List): list of vols to use.
+            num_slices (int or 2-List[a,b]): the number of slices to drop, or range of slices to drop.
+            radius (int): radius (voxels) on bottom cross section in which to select second neurite.
+            context_slices (int): max number of slice on top and bottom neurites.
+            fix_num_points (int): ensures number of points in pointcloud is exactly this.
+            open_vol (bool): whether to get the exterior of the vol as open tube-like manifolds (True) or as closed balloon-like manifolds (False)
+                             amounts to removing the interior along the z-axis (True) or for entire vol at once (False).
             retry (bool): whether to retry until success if cannot generate example
-            verbose (bool): print warning messages
+            verbose (bool): print warning messages.
+            return_vol (str): whether to also return the volumetirc representation.
         """
 
         super().__init__()
+
+        if isinstance(num_slices, int):
+            num_slices = [num_slices, num_slices]
+        else:
+            assert len(
+                num_slices) == 2, 'if num_slices is list must be len == 2 in indicating range.'
 
         self.vols = vols
         self.classes = []
         self.num_slices = num_slices
         self.radius = radius
         self.context_slices = context_slices
+        self.fix_num_points = fix_num_points
+        self.open_vol = open_vol
         self.retry = retry
         self.verbose = verbose
+        self.return_vol = return_vol
+
         # get classes to use
         length = 0
         for vol in vols:
-            classes_z = get_classes_which_zspan_at_least(vol, num_slices+2)
+            # TODO figure out zspan condition other than max num_slices
+            classes_z = get_classes_which_zspan_at_least(vol, num_slices[1]+2)
             classes_vol = get_classes_with_at_least_volume(vol, 400)
             cls_union = list(set(classes_z) & set(classes_vol))
             length += len(cls_union)
@@ -125,9 +156,6 @@ class SplitterDataset(torch.utils.data.Dataset):
         z_max_range = zmax-margin-num_slices+1 if example_type else zmax+1
         # margin not needed on bottom
         drop_start = random.randint(zmin+margin, z_max_range)
-
-        # DELETE
-        drop_start = z_max_range
 
         # take min to ensure there is some bottom vol
         drop_end = min(drop_start+num_slices, vol.shape[0]-1)
@@ -229,11 +257,47 @@ class SplitterDataset(torch.utils.data.Dataset):
         c = self.classes[voli][index]
         return vol, c, label
 
+    def convert_to_point_cloud(self, vol):
+
+        pc = convert_grid_to_pointcloud(vol)
+
+        if self.fix_num_points is not None:
+            num_points = pc.shape[0]
+
+            # need way to handle, could just retry?
+            if num_points < self.fix_num_points:
+                if self.verbose:
+                    print(
+                        f'not enough points, need {self.fix_num_points}, have {num_points}')
+                return pc
+
+            pc = random_sample_arr(pc, count=self.fix_num_points)
+
+        return pc
+
+    def remove_vol_interiors(self, vol):
+
+        def rm_interior(v):
+            return v * find_boundaries(
+                v, mode='inner')
+
+        if self.open_vol:
+            for i in range(vol.shape[0]):
+                vol[i] = rm_interior(vol[i])
+        else:
+            vol = rm_interior(vol)
+
+        return vol
+
     def get_example(self, index):
 
         vol, c, label = self.get_vol_class_label_from_index(index)
+
+        # choose num_slices
+        num_slices = random.randint(self.num_slices[0], self.num_slices[1])
+
         vol_example = self.get_volumetric_example(
-            vol, c, label, self.num_slices, self.radius, self.context_slices)
+            vol, c, label, num_slices, self.radius, self.context_slices)
 
         # if we cant build example, try again with random index
         if self.retry and vol_example is None:
@@ -242,17 +306,25 @@ class SplitterDataset(torch.utils.data.Dataset):
                 print(f'redo on i {rand_i}')
             return self.get_example(rand_i)
 
+        # final crop and relabel
+        vol_example = crop_where(vol_example, vol_example != 0)
+        vol_example = cc3d.connected_components(vol_example)
+
+        # sanity check
+        labels = np.unique(vol_example)
+        assert len(
+            labels) == 3, f'final sample should have 3 labels, [0, n1, n2] not {labels}'
+
+        # remove interiors
+        vol_example = self.remove_vol_interiors(vol_example)
+
         # convert to point cloud
-        pc_example = vol_example
+        pc_example = self.convert_to_point_cloud(vol_example)
 
-        return (pc_example, c, label)
+        if self.return_vol:
+            return (pc_example, vol_example, label)
 
-    def convert_volumetric_to_point_cloud(self, vol):
-        # Take surfaces of vols and final connected components sanity check #
-        vol = find_boundaries(vol, mode='inner').astype(np.uint8)
-        vol = cc3d.connected_components(vol)
-        assert len(np.unique(vol)
-                   ) == 3, 'final sample should have 3 labels, n1, n2, 0'
+        return (pc_example, label)
 
     def __getitem__(self, index):
         return self.get_example(index)

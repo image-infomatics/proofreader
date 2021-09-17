@@ -34,6 +34,9 @@ def get_unique_sorted_by_count(vol, reverse=False, return_counts=False):
 
 
 def crop_where(vol, condition):
+    """
+    Crop a matrix where the given conditions is true
+    """
     crop_slice = []
     for cord in np.where(condition):
         amin, amax = np.min(cord), np.max(cord)
@@ -42,17 +45,21 @@ def crop_where(vol, condition):
     cropped = vol[crop_slice]
     return cropped
 
-# get the min and max indices where conditions is true
+
 def arg_where_range(condition):
+    """
+    Get the min and max indices where conditions is true
+    """
     where_indices = np.argwhere(condition)
     mins, maxs = np.amin(where_indices, axis=0), np.amax(where_indices, axis=0)
     return mins, maxs
 
- # return a circular mask at center with radius
- # https://newbedev.com/how-can-i-create-a-circular-mask-for-a-numpy-array
 
 def circular_mask(h, w, center=None, radius=None):
-
+    """
+    Return a circular mask at center with radius
+    https://newbedev.com/how-can-i-create-a-circular-mask-for-a-numpy-array
+    """
     if center is None:  # use the middle of the image
         center = (int(w/2), int(h/2))
     if radius is None:  # use the smallest distance between the center and image walls
@@ -64,19 +71,42 @@ def circular_mask(h, w, center=None, radius=None):
     mask = dist_from_center <= radius
     return mask
 
-# get coordinate grid from matrix
+
 def get_grid_from_matrix(mat):
+    """
+    Get coordinate grid from matrix
+    """
     sl = []
     for d in mat.shape:
-        sl.append(slice(0,d))
+        sl.append(slice(0, d))
     sl = tuple(sl)
     return np.mgrid[sl]
 
-# https://stackoverflow.com/questions/11144513/cartesian-product-of-x-and-y-array-points-into-single-array-of-2d-points
+
 def cartesian_product(*arrays):
+    """
+    Return the Cartesian product of n arrays
+    https://stackoverflow.com/questions/11144513/cartesian-product-of-x-and-y-array-points-into-single-array-of-2d-points
+    """
     la = len(arrays)
     dtype = np.result_type(*arrays)
     arr = np.empty([len(a) for a in arrays] + [la], dtype=dtype)
     for i, a in enumerate(np.ix_(*arrays)):
-        arr[...,i] = a
+        arr[..., i] = a
     return arr.reshape(-1, la)
+
+
+def random_sample_arr(arr, ratio=None, count=None, replace=False):
+    """
+    Randomly sample a given array
+    """
+    rnone = ratio is None
+    cnone = count is None
+    assert rnone != cnone, 'must specify ratio xor count'
+    amount = 0
+    if not rnone:
+        amount = round(len(arr)*ratio)
+    else:
+        amount = count
+    r_ind = np.random.choice(len(arr), amount, replace=replace)
+    return arr[r_ind]
