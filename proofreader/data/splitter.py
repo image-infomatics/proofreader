@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Tuple
 import numpy as np
 import torch
 import random
@@ -6,9 +6,9 @@ from einops import rearrange
 import cc3d
 from proofreader.utils.all import list_remove, split_int
 from proofreader.utils.data import random_sample_arr, circular_mask, crop_where
-from proofreader.utils.vis import view_segmentation, grid_volume
-from skimage.color import label2rgb
-from skimage.segmentation import boundaries, find_boundaries
+from skimage.segmentation import find_boundaries
+from sklearn.preprocessing import minmax_scale
+
 from scipy import ndimage
 
 
@@ -61,8 +61,9 @@ def convert_grid_to_pointcloud(vol, threshold=0, keep_features=False):
         cords = np.append([vol], cords, axis=0)
     # select cords where above threshold
     cords = cords[:, vol > threshold]
-    # array of points representation
+
     cords = np.swapaxes(cords, 0, 1)
+
     return cords
 
 
@@ -75,8 +76,12 @@ class SplitterDataset(torch.utils.data.Dataset):
                  num_points: int = None,
                  open_vol: bool = True,
                  retry: bool = True,
+                 shuffle: bool = False,
+                 normalize: bool = True,
                  verbose: bool = False,
-                 return_vol: str = False
+                 return_vol: str = False,
+                 torch: bool = True,
+
                  ):
         """
         Parameters:
@@ -87,9 +92,12 @@ class SplitterDataset(torch.utils.data.Dataset):
             num_points (int): ensures number of points in pointcloud is exactly this.
             open_vol (bool): whether to get the exterior of the vol as open tube-like manifolds (True) or as closed balloon-like manifolds (False)
                              amounts to removing the interior along the z-axis (True) or for entire vol at once (False).
-            retry (bool): whether to retry until success if cannot generate example
+            retry (bool): whether to retry until success if cannot generate example.
+            shuffle (bool): whether to shuffle the classes.
+            normalize (bool): whether to normalize the pointcloud between -0.5 and 0.5.
             verbose (bool): print warning messages.
             return_vol (str): whether to also return the volumetirc representation.
+            torch (bool): whether to convert to torch tensors.
         """
 
         super().__init__()
@@ -101,25 +109,40 @@ class SplitterDataset(torch.utils.data.Dataset):
                 num_slices) == 2, 'if num_slices is list must be len == 2 in indicating range.'
 
         self.vols = vols
-        self.classes = []
+        self.classes = []  # all possible neurite classes
+        self.class_i_to_vol_i = []  # maps a neurite class index to vol index
         self.num_slices = num_slices
         self.radius = radius
         self.context_slices = context_slices
         self.num_points = num_points
         self.open_vol = open_vol
         self.retry = retry
+        self.shuffle = shuffle
+        self.normalize = normalize
         self.verbose = verbose
         self.return_vol = return_vol
+        self.torch = torch
 
         # get classes to use
         length = 0
-        for vol in vols:
+        for vol_i, vol in enumerate(vols):
             # TODO figure out zspan condition other than max num_slices
             classes_z = get_classes_which_zspan_at_least(vol, num_slices[1]+2)
             classes_vol = get_classes_with_at_least_volume(vol, 400)
             cls_union = list(set(classes_z) & set(classes_vol))
             length += len(cls_union)
-            self.classes.append(cls_union)
+            self.classes.extend(cls_union)
+            self.class_i_to_vol_i.extend([vol_i] * len(cls_union))
+
+        # convert to numpy
+        self.classes = np.array(self.classes)
+        self.class_i_to_vol_i = np.array(self.class_i_to_vol_i)
+
+        # shuffle classes and vol_i map together
+        if self.shuffle:
+            shuffler = np.random.permutation(len(self.classes))
+            self.classes = self.classes[shuffler]
+            self.class_i_to_vol_i = self.class_i_to_vol_i[shuffler]
 
         # double for positive and negative examples
         self.length = length*2
@@ -133,7 +156,7 @@ class SplitterDataset(torch.utils.data.Dataset):
         context_slices (int): max number of slice on top and bottom neurites
     """
 
-    def get_volumetric_example(self, vol, c, example_type, num_slices, radius, context_slices):
+    def get_volumetric_example(self, vol, c, label, num_slices, radius, context_slices):
 
         margin = 1  # number of slices that must be left on top after droping slices
         top_c = c
@@ -153,7 +176,7 @@ class SplitterDataset(torch.utils.data.Dataset):
 
         # the drop can start at the end of the top nerutie for negative examples
         # but should start earlier such that there is some bottom fragment for postive examples
-        z_max_range = zmax-margin-num_slices+1 if example_type else zmax+1
+        z_max_range = zmax-margin-num_slices+1 if label == 1 else zmax+1
         # margin not needed on bottom
         drop_start = random.randint(zmin+margin, z_max_range)
 
@@ -161,6 +184,10 @@ class SplitterDataset(torch.utils.data.Dataset):
         drop_end = min(drop_start+num_slices, vol.shape[0]-1)
         top_z_len = min(context_slices, drop_start-zmin)
         bot_z_len = min(context_slices, sz-drop_end)
+
+        if self.verbose:
+            print(
+                f'num_slices: {num_slices}, drop: [{drop_start}, {drop_end}]')
 
         # Alloc final vol, we dont know how large it will be in y and x but we know max z #
         mz = num_slices + top_z_len + bot_z_len
@@ -194,7 +221,7 @@ class SplitterDataset(torch.utils.data.Dataset):
         mismatch_classes = list(np.unique(bot_border))
 
         # For positive examples, simply set bottom class to top class #
-        if example_type:
+        if label == 1:
             bot_c = top_c
         else:
             # Other wise select bottom class by picking 1 neurite from set of labels in radius #
@@ -204,7 +231,7 @@ class SplitterDataset(torch.utils.data.Dataset):
             if len(mismatch_classes) == 0:
                 if self.verbose:
                     print(
-                        f'(find negative) for {example_type} example, class {c}, cut {drop_start, drop_end} could not find bottom label within radius, returning none')
+                        f'(find negative) for {label} example, class {c}, cut {drop_start, drop_end} could not find bottom label within radius, returning none')
                 return None
             # maybe could select here based on on cross-sectional volume
             # select bottom neurite class
@@ -229,7 +256,7 @@ class SplitterDataset(torch.utils.data.Dataset):
         if len(relabeled_fragments_in_radius) == 0:
             if self.verbose:
                 print(
-                    f'(relabel bot) for {example_type} example, class {c}, cut {drop_start, drop_end}, could not find bottom label within radius, returning none')
+                    f'(relabel bot) for {label} example, class {c}, cut {drop_start, drop_end}, could not find bottom label within radius, returning none')
             return None
         # take fragment which is in radius
         relabeled_bot_c = random.choice(relabeled_fragments_in_radius)
@@ -243,18 +270,16 @@ class SplitterDataset(torch.utils.data.Dataset):
         return final_vol
 
     def get_vol_class_label_from_index(self, index):
-        # determine which vol index is in
-        for voli, classes_vol in enumerate(self.classes):
-            # we double length to account for +/- examples for each c
-            len_classes = len(classes_vol) * 2
-            if index - len_classes < 0:
-                break
-            index -= len_classes
 
-        label = index % 2 == 0  # label based on even or odd
-        vol = self.vols[voli]
+        label = np.int64(index % 2 == 0)  # label based on even or odd
         index = index // 2
-        c = self.classes[voli][index]
+        c = self.classes[index]
+        vol_i = self.class_i_to_vol_i[index]
+        vol = self.vols[vol_i]
+
+        if self.verbose:
+            print(f'{label}, vol: {vol_i}, c: {c}')
+
         return vol, c, label
 
     def convert_to_point_cloud(self, vol):
@@ -313,18 +338,31 @@ class SplitterDataset(torch.utils.data.Dataset):
         vol_example = cc3d.connected_components(vol_example)
 
         # sanity check
-        labels = np.unique(vol_example)
+        all_classes = np.unique(vol_example)
         assert len(
-            labels) == 3, f'final sample should have 3 labels, [0, n1, n2] not {labels}'
+            all_classes) == 3, f'final sample should have 3 classes, [0, n1, n2] not {all_classes}'
 
         # remove interiors
         vol_example = self.remove_vol_interiors(vol_example)
 
         # convert to point cloud
         pc_example = self.convert_to_point_cloud(vol_example)
+        pc_example = np.swapaxes(pc_example, 0, 1)
+
+        if self.normalize:
+            pc_example = minmax_scale(
+                pc_example, feature_range=(-0.5, 0.5), axis=1)  # [-0.5, 0.5]
+
+        if self.verbose:
+            print(
+                f'pc shape: {pc_example.shape}, vol shape: {vol_example.shape}')
+
+        if self.torch:
+            pc_example = torch.from_numpy(pc_example).type(torch.float32)
+            label = torch.tensor(label).type(torch.LongTensor)
 
         if self.return_vol:
-            return (pc_example, vol_example, label)
+            return (pc_example, label, vol_example)
 
         return (pc_example, label)
 

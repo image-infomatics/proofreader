@@ -1,6 +1,7 @@
 import math
 import torch
 import gc
+import os
 
 
 def print_all_live_tensors():
@@ -11,6 +12,30 @@ def print_all_live_tensors():
                 print(obj.dtype, obj.device, type(obj), obj.size())
         except:
             pass
+
+
+def get_cpu_count():
+    cpu_count = None
+    if hasattr(os, 'sched_getaffinity'):
+        try:
+            cpu_count = len(os.sched_getaffinity(0))
+            return cpu_count
+        except:
+            pass
+
+    cpu_count = os.cpu_count()
+    if cpu_count is not None:
+        return cpu_count
+
+    try:
+        import multiprocessing
+        cpu_count = multiprocessing.cpu_count()
+    except:
+        pass
+
+    print('could not get cpu count, returning 1')
+
+    return 1
 
 
 def readable_bytes(nbytes):

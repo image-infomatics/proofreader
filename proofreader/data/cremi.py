@@ -37,27 +37,27 @@ def prepare_cremi_vols(path):
     trueC = read_cremi_volume('C', seg=True, path=path)
 
     # A is clean
-    trueA_val = trueA[:16].copy()
+    trueA_test = trueA[:16].copy()
     trueA_train = trueA[16:].copy()
 
-    # Clean B, major slip at 16, we can conviently use this as val split
+    # Clean B, major slip at 16, we can conviently use this as test split
     assert trueB.shape[0] == 125, 'vol may have already been cleaned'
-    trueB_val = trueB[:16].copy()
+    trueB_test = trueB[:16].copy()
     trueB_train = trueB[16:].copy()
 
     # Clean C, some slices are totally mislabeled
     trueC = np.delete(trueC, [14, 74], 0)
-    trueC_val = trueC[:16].copy()
+    trueC_test = trueC[:16].copy()
     trueC_train = trueC[16:].copy()
 
     train_vols = [trueA_train, trueB_train, trueC_train]
-    val_vols = [trueA_val, trueB_val, trueC_val]
+    test_vols = [trueA_test, trueB_test, trueC_test]
 
     # redo connected_components to reconnect neurites
     for i in range(len(train_vols)):
         train_vols[i] = cc3d.connected_components(train_vols[i])
 
-    for i in range(len(val_vols)):
-        val_vols[i] = cc3d.connected_components(val_vols[i])
+    for i in range(len(test_vols)):
+        test_vols[i] = cc3d.connected_components(test_vols[i])
 
-    return train_vols, val_vols
+    return train_vols, test_vols
