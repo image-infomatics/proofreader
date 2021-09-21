@@ -6,10 +6,19 @@ import IPython
 import math
 
 
-def plot_3d(data, marker='.'):
+def plot_3d(data, marker='.', lims=None, xlim=None, ylim=None, zlim=None):
     x, y, z = data[:, 0], data[:, 1], data[:, 2]
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111, projection='3d')
+
+    if lims is not None:
+        xlim, ylim, zlim = lims
+    if xlim is not None:
+        ax.set_xlim3d(xlim[0], xlim[1])
+    if ylim is not None:
+        ax.set_ylim3d(ylim[0], ylim[1])
+    if zlim is not None:
+        ax.set_zlim3d(zlim[0], zlim[1])
 
     ax.scatter(x, y, z, marker=marker)
     plt.show()

@@ -18,7 +18,7 @@ def cli_main(args):
     # data
     train_vols, test_vols = prepare_cremi_vols('./dataset/cremi')
     train_loader, val_loader = build_dataloader_from_config(
-        config.dataset, train_vols)
+        config.dataset, config.augmentor, train_vols)
 
     # model
     model = build_model_from_config(config.model, config.dataset)

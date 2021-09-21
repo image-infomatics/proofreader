@@ -1,3 +1,4 @@
+from proofreader.data.augment import Augmentor
 from typing import List, Tuple
 import numpy as np
 import torch
@@ -55,6 +56,7 @@ def get_classes_with_at_least_volume(vol, min_volume):
 
 def convert_grid_to_pointcloud(vol, threshold=0, keep_features=False):
     (sz, sy, sx) = vol.shape
+
     # generate all coords in img
     cords = np.mgrid[0:sz, 0:sy, 0:sx]
     if keep_features:
@@ -64,7 +66,7 @@ def convert_grid_to_pointcloud(vol, threshold=0, keep_features=False):
 
     cords = np.swapaxes(cords, 0, 1)
 
-    return cords
+    return cords.astype(np.float32)
 
 
 class SplitterDataset(torch.utils.data.Dataset):
@@ -77,11 +79,11 @@ class SplitterDataset(torch.utils.data.Dataset):
                  open_vol: bool = True,
                  retry: bool = True,
                  shuffle: bool = False,
-                 normalize: bool = True,
                  verbose: bool = False,
-                 return_vol: str = False,
+                 return_vol: bool = False,
+                 swapaxes: bool = True,
                  torch: bool = True,
-
+                 Augmentor: Augmentor = Augmentor(),
                  ):
         """
         Parameters:
@@ -94,10 +96,11 @@ class SplitterDataset(torch.utils.data.Dataset):
                              amounts to removing the interior along the z-axis (True) or for entire vol at once (False).
             retry (bool): whether to retry until success if cannot generate example.
             shuffle (bool): whether to shuffle the classes.
-            normalize (bool): whether to normalize the pointcloud between -0.5 and 0.5.
             verbose (bool): print warning messages.
-            return_vol (str): whether to also return the volumetirc representation.
+            return_vol (bool): whether to also return the volumetirc representation.
+            swapaxes (bool): whether to swap axes (0,1). True -> CxN, False -> NxC.
             torch (bool): whether to convert to torch tensors.
+            Augmentor (PCAugmentor or None): object to peform point cloud data augmentation.
         """
 
         super().__init__()
@@ -118,10 +121,11 @@ class SplitterDataset(torch.utils.data.Dataset):
         self.open_vol = open_vol
         self.retry = retry
         self.shuffle = shuffle
-        self.normalize = normalize
         self.verbose = verbose
         self.return_vol = return_vol
+        self.swapaxes = swapaxes
         self.torch = torch
+        self.Augmentor = Augmentor
 
         # get classes to use
         length = 0
@@ -179,7 +183,6 @@ class SplitterDataset(torch.utils.data.Dataset):
         z_max_range = zmax-margin-num_slices+1 if label == 1 else zmax+1
         # margin not needed on bottom
         drop_start = random.randint(zmin+margin, z_max_range)
-
         # take min to ensure there is some bottom vol
         drop_end = min(drop_start+num_slices, vol.shape[0]-1)
         top_z_len = min(context_slices, drop_start-zmin)
@@ -322,7 +325,6 @@ class SplitterDataset(torch.utils.data.Dataset):
 
         # choose num_slices
         num_slices = random.randint(self.num_slices[0], self.num_slices[1])
-
         vol_example = self.get_volumetric_example(
             vol, c, label, num_slices, self.radius, self.context_slices)
 
@@ -347,11 +349,12 @@ class SplitterDataset(torch.utils.data.Dataset):
 
         # convert to point cloud
         pc_example = self.convert_to_point_cloud(vol_example)
-        pc_example = np.swapaxes(pc_example, 0, 1)
+        if self.Augmentor is not None:
+            pc_example = self.Augmentor.transfrom(pc_example)
 
-        if self.normalize:
-            pc_example = minmax_scale(
-                pc_example, feature_range=(-0.5, 0.5), axis=1)  # [-0.5, 0.5]
+        # swap axes if needed
+        if self.swapaxes:
+            pc_example = np.swapaxes(pc_example, 0, 1)
 
         if self.verbose:
             print(

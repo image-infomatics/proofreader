@@ -9,9 +9,20 @@ from torch.utils.data import DataLoader, Subset
 import torch.nn.functional as F
 
 from proofreader.data.splitter import SplitterDataset
+from proofreader.data.augment import Augmentor
 from proofreader.model.classifier import Classifier
 from proofreader.model.pointnet import PointNetCls
 from proofreader.utils.all import get_cpu_count
+
+
+@dataclass
+class AugmentorConfig:
+    shuffle: bool = False,
+    center: bool = False,
+    rotate: bool = False,
+    scale: bool = False,
+    jitter: bool = False,
+    normalize: tuple = (125, 1250, 1250)
 
 
 @dataclass
@@ -22,7 +33,7 @@ class DatasetConfig:
     radius: int = 96
     context_slices: int = 6
     num_points: int = 1024
-    batch_size: int = 8
+    batch_size: int = 2
     val_split: float = 0.15
 
 
@@ -45,6 +56,7 @@ class ExperimentConfig:
     dataset: DatasetConfig = DatasetConfig()
     model: ModelConfig = ModelConfig()
     trainer: TrainerConfig = TrainerConfig()
+    augmentor: AugmentorConfig = AugmentorConfig()
 
     def toString(self):
         d = pprint.pformat(self.dataset)
@@ -52,24 +64,31 @@ class ExperimentConfig:
         return f'NAME\n{self.name}\nDATASET{d}\nMODEL\n{m}\n'
 
 
-def build_dataloader_from_config(config: DatasetConfig, vols):
-    dataset = SplitterDataset(
-        vols, config.num_slices, config.radius, config.context_slices, num_points=config.num_points, normalize=True, open_vol=True, shuffle=True, torch=True)
+def build_dataloader_from_config(dataset_config: DatasetConfig, aug_config: AugmentorConfig, vols):
 
-    split = math.floor(len(dataset)*config.val_split)
+    # build augmentor
+    augmentor = Augmentor(center=aug_config.center, shuffle=aug_config.shuffle,
+                          rotate=aug_config.rotate, scale=aug_config.scale,
+                          jitter=aug_config.jitter, normalize=aug_config.normalize)
+
+    # build dataset
+    dataset = SplitterDataset(
+        vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices, num_points=dataset_config.num_points, Augmentor=augmentor, open_vol=True, shuffle=True, torch=True)
+
+    # split into train and val
+    split = math.floor(len(dataset)*dataset_config.val_split)
     train_split = list(range(0, split))
     val_split = list(range(split, len(dataset)))
     ds_train = Subset(dataset, train_split)
     ds_val = Subset(dataset, val_split)
-
     print(f'# train: {len(ds_train)}, # val: {len(ds_val)}')
 
+    # build dataloader
     cpus = get_cpu_count()
-
     dl_train = DataLoader(
-        dataset=ds_train, batch_size=config.batch_size, num_workers=cpus, drop_last=True)
+        dataset=ds_train, batch_size=dataset_config.batch_size, num_workers=cpus, drop_last=True)
     dl_val = DataLoader(
-        dataset=ds_val, batch_size=config.batch_size, num_workers=cpus, drop_last=True)
+        dataset=ds_val, batch_size=dataset_config.batch_size, num_workers=cpus, drop_last=True)
 
     return dl_train, dl_val
 

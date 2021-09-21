@@ -5,13 +5,27 @@ import random
 
 
 def get_tag(t, p):
-    pre = '-'
-    post = 'right'
+    pre = 'false'
+    post = 'correct'
     if t == 0:
-        pre = '+'
+        pre = 'true'
     if p != t:
         post = 'wrong'
     return f'{pre}_{post}'
+
+
+def predict_class(y_hat):
+    pred_soft = torch.exp(y_hat)
+    pred_max = torch.argmax(pred_soft, axis=1)
+    return pred_max
+
+
+def get_accuracy(y, pred):
+    correct = (y == pred).type(torch.float32)
+    total_acc = torch.mean(correct)
+    true_acc = torch.mean(correct[y == 1])
+    false_acc = torch.mean(correct[y == 0])
+    return {'total_acc': total_acc, 'true_acc': true_acc, 'false_acc': false_acc}
 
 
 class Classifier(pl.LightningModule):
@@ -20,8 +34,6 @@ class Classifier(pl.LightningModule):
         self.save_hyperparameters()
         self.backbone = backbone
         self.loss = loss
-        self.train_log_interval = 5
-        self.val_log_interval = 10
 
     def forward(self, x):
         # use forward for inference/predictions
@@ -29,22 +41,24 @@ class Classifier(pl.LightningModule):
         return embedding
 
     def training_step(self, batch, batch_idx):
+        # step
         x, y = batch
         y_hat = self.backbone(x)
         loss = self.loss(y_hat, y)
         self.log('train_loss', loss, on_epoch=True)
 
-        # logging
-        if batch_idx % self.train_log_interval == 0:
-            tensorboard = self.logger.experiment
-            i = random.randint(0, x.shape[0]-1)  # batch index
-            y_hat_i = y_hat[i]
-            pred_soft = torch.exp(y_hat_i)
-            pred_max = torch.argmax(pred_soft)
-            tag = get_tag(y[i], pred_max)
-            mesh = torch.swapaxes(x, 1, 2)[i:i+1]
+        # accuracies
+        pred = predict_class(y_hat)
+        accs = get_accuracy(y, pred)
+        self.log('train_accuracy', accs, on_epoch=True)
 
-            tensorboard.add_mesh(tag, mesh)
+        # log meshes
+        if batch_idx % 10 == 0:
+            tb = self.logger.experiment
+            i = random.randint(0, x.shape[0]-1)  # batch index
+            tag = get_tag(y[i], pred[i])
+            mesh = torch.swapaxes(x, 1, 2)[i:i+1]
+            tb.add_mesh(tag, mesh)
 
         return loss
 
