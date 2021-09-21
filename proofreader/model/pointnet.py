@@ -106,8 +106,7 @@ if __name__ == '__main__':
     num_feature = 3
     print(
         f'num_points {num_points}, batch_size {batch_size}, num_feature {num_feature}')
-    sim_data = torch.rand(batch_size, num_feature,
-                          num_points, dtype=torch.float64)
+    sim_data = torch.rand(batch_size, num_feature, num_points)
     print(sim_data.dtype)
     trans = STN3d(num_points=num_points)
     out = trans(sim_data)
