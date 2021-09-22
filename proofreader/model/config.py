@@ -17,11 +17,11 @@ from proofreader.utils.all import get_cpu_count
 
 @dataclass
 class AugmentorConfig:
-    shuffle: bool = False,
-    center: bool = False,
-    rotate: bool = False,
-    scale: bool = False,
-    jitter: bool = False,
+    shuffle: bool = False
+    center: bool = False
+    rotate: bool = False
+    scale: bool = False
+    jitter: bool = False
     normalize: tuple = (125, 1250, 1250)
 
 
@@ -33,7 +33,7 @@ class DatasetConfig:
     radius: int = 96
     context_slices: int = 6
     num_points: int = 1024
-    batch_size: int = 2
+    batch_size: int = 64
     val_split: float = 0.15
 
 
@@ -73,12 +73,13 @@ def build_dataloader_from_config(dataset_config: DatasetConfig, aug_config: Augm
 
     # build dataset
     dataset = SplitterDataset(
-        vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices, num_points=dataset_config.num_points, Augmentor=augmentor, open_vol=True, shuffle=True, torch=True)
+        vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices,
+        num_points=dataset_config.num_points, Augmentor=augmentor, open_vol=True, epoch_multplier=5, shuffle=True, torch=True)
 
     # split into train and val
     split = math.floor(len(dataset)*dataset_config.val_split)
-    train_split = list(range(0, split))
-    val_split = list(range(split, len(dataset)))
+    train_split = list(range(split, len(dataset)-1))
+    val_split = list(range(0, split))
     ds_train = Subset(dataset, train_split)
     ds_val = Subset(dataset, val_split)
     print(f'# train: {len(ds_train)}, # val: {len(ds_val)}')
@@ -86,7 +87,7 @@ def build_dataloader_from_config(dataset_config: DatasetConfig, aug_config: Augm
     # build dataloader
     cpus = get_cpu_count()
     dl_train = DataLoader(
-        dataset=ds_train, batch_size=dataset_config.batch_size, num_workers=cpus, drop_last=True)
+        dataset=ds_train, batch_size=dataset_config.batch_size, num_workers=cpus, shuffle=True, drop_last=True)
     dl_val = DataLoader(
         dataset=ds_val, batch_size=dataset_config.batch_size, num_workers=cpus, drop_last=True)
 
@@ -108,10 +109,10 @@ def build_model_from_config(model_config: ModelConfig, dataset_config: DatasetCo
 
 
 def build_trainer_from_config(config: TrainerConfig, args):
-    logger = TensorBoardLogger(save_dir='logs/', name=args.config)
+    logger = TensorBoardLogger(save_dir='~/ceph/pf', name=args.config)
 
     trainer = Trainer.from_argparse_args(
-        args, deterministic=config.deterministic, logger=logger)
+        args, deterministic=config.deterministic, log_every_n_steps=100, logger=logger, num_sanity_val_steps=0)
     return trainer
 
 

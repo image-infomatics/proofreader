@@ -3,13 +3,12 @@ from typing import List, Tuple
 import numpy as np
 import torch
 import random
-from einops import rearrange
 import cc3d
 from proofreader.utils.all import list_remove, split_int
 from proofreader.utils.data import random_sample_arr, circular_mask, crop_where
+from proofreader.data.augment import Augmentor
+from proofreader.data.cremi import prepare_cremi_vols
 from skimage.segmentation import find_boundaries
-from sklearn.preprocessing import minmax_scale
-
 from scipy import ndimage
 
 
@@ -78,6 +77,7 @@ class SplitterDataset(torch.utils.data.Dataset):
                  num_points: int = None,
                  open_vol: bool = True,
                  retry: bool = True,
+                 epoch_multplier: int = 1,
                  shuffle: bool = False,
                  verbose: bool = False,
                  return_vol: bool = False,
@@ -95,6 +95,7 @@ class SplitterDataset(torch.utils.data.Dataset):
             open_vol (bool): whether to get the exterior of the vol as open tube-like manifolds (True) or as closed balloon-like manifolds (False)
                              amounts to removing the interior along the z-axis (True) or for entire vol at once (False).
             retry (bool): whether to retry until success if cannot generate example.
+            epoch_multplier (int): factor which scales the effective length of the dataset. Each neurite will be sampled this many times.
             shuffle (bool): whether to shuffle the classes.
             verbose (bool): print warning messages.
             return_vol (bool): whether to also return the volumetirc representation.
@@ -120,6 +121,7 @@ class SplitterDataset(torch.utils.data.Dataset):
         self.num_points = num_points
         self.open_vol = open_vol
         self.retry = retry
+        self.epoch_multplier = epoch_multplier
         self.shuffle = shuffle
         self.verbose = verbose
         self.return_vol = return_vol
@@ -149,7 +151,8 @@ class SplitterDataset(torch.utils.data.Dataset):
             self.class_i_to_vol_i = self.class_i_to_vol_i[shuffler]
 
         # double for positive and negative examples
-        self.length = length*2
+        self.true_length = length*2
+        self.effective_length = self.true_length * self.epoch_multplier
 
     """
     Gets a postive or negative example from vol using some class seed. Returns the volmertic representation of example.
@@ -274,6 +277,7 @@ class SplitterDataset(torch.utils.data.Dataset):
 
     def get_vol_class_label_from_index(self, index):
 
+        index = index % self.epoch_multplier
         label = np.int64(index % 2 == 0)  # label based on even or odd
         index = index // 2
         c = self.classes[index]
@@ -373,4 +377,19 @@ class SplitterDataset(torch.utils.data.Dataset):
         return self.get_example(index)
 
     def __len__(self):
-        return self.length
+        return self.effective_length
+
+
+if __name__ == '__main__':
+
+    num_slices = [1, 4]
+    radius = 96
+    context_slices = 6
+    num_points = 1024
+
+    train_vols, test_vols = prepare_cremi_vols('../../dataset/cremi')
+
+    augmentor = Augmentor(center=True, shuffle=True, rotate=True, scale=True)
+    dataset = SplitterDataset(train_vols, num_slices, radius, context_slices,
+                              num_points=num_points, torch=True, open_vol=True, verbose=True,  epoch_multplier=10, shuffle=True, Augmentor=augmentor)
+    print(len(dataset))

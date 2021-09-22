@@ -50,15 +50,15 @@ class Classifier(pl.LightningModule):
         # accuracies
         pred = predict_class(y_hat)
         accs = get_accuracy(y, pred)
-        self.log('train_accuracy', accs, on_epoch=True)
+        self.log('train_accuracy', accs['total_acc'], on_epoch=True)
 
-        # log meshes
-        if batch_idx % 10 == 0:
-            tb = self.logger.experiment
-            i = random.randint(0, x.shape[0]-1)  # batch index
-            tag = get_tag(y[i], pred[i])
-            mesh = torch.swapaxes(x, 1, 2)[i:i+1]
-            tb.add_mesh(tag, mesh)
+        # # log meshes
+        # if batch_idx % 10 == 0:
+        #     tb = self.logger.experiment
+        #     i = random.randint(0, x.shape[0]-1)  # batch index
+        #     tag = get_tag(y[i], pred[i])
+        #     mesh = torch.swapaxes(x, 1, 2)[i:i+1]
+        #     tb.add_mesh(tag, mesh)
 
         return loss
 
@@ -66,7 +66,12 @@ class Classifier(pl.LightningModule):
         x, y = batch
         y_hat = self.backbone(x)
         loss = self.loss(y_hat, y)
-        self.log('valid_loss', loss, on_step=True)
+        self.log('valid_loss', loss, on_epoch=True)
+
+        # accuracies
+        pred = predict_class(y_hat)
+        accs = get_accuracy(y, pred)
+        self.log('valid_accuracy', accs['total_acc'], on_epoch=True)
 
     def test_step(self, batch, batch_idx):
         pass
