@@ -1,0 +1,7 @@
+NAME
+default
+DATASETDatasetConfig(dataset='cremi', num_classes=2, radius=96, context_slices=6, num_points=1024, batch_size=64, val_split=0.15)
+MODEL
+ModelConfig(model='pointnet', optimizer='AdamW', dim=256, learning_rate=0.001)
+TRAINING
+seed: 7, batch_size: 2, use_gpu: False, total_cpus: 8, total_gpus: 0, ddp: False, world_size: 1, num_workers: 1
