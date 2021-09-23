@@ -277,7 +277,7 @@ class SplitterDataset(torch.utils.data.Dataset):
 
     def get_vol_class_label_from_index(self, index):
 
-        index = index % self.epoch_multplier
+        index = index % self.true_length
         label = np.int64(index % 2 == 0)  # label based on even or odd
         index = index // 2
         c = self.classes[index]
@@ -334,7 +334,7 @@ class SplitterDataset(torch.utils.data.Dataset):
 
         # if we cant build example, try again with random index
         if self.retry and vol_example is None:
-            rand_i = random.randint(0, self.length)
+            rand_i = random.randint(0, self.effective_length)
             if self.verbose:
                 print(f'redo on i {rand_i}')
             return self.get_example(rand_i)

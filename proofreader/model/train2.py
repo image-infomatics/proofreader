@@ -38,11 +38,11 @@ import shutil
               help='for output'
               )
 @click.option('--epochs', '-e',
-              type=int, default=100,
+              type=int, default=1000,
               help='number of epochs to train for'
               )
 @click.option('--batch-size', '-b',
-              type=int, default=1,
+              type=int, default=128,
               help='size of mini-batch.'
               )
 @click.option('--num_workers', '-w',
@@ -53,7 +53,7 @@ import shutil
               type=int, default=200, help='training interval in terms of examples seen to record data points.'
               )
 @click.option('--validation-interval', '-v',
-              type=int, default=500, help='validation interval in terms of examples seen to record validation data.'
+              type=int, default=10, help='validation interval in terms of epochs to record validation data.'
               )
 @click.option('--test-interval', '-ti',
               type=int, default=500, help='interval when to run full test.'
@@ -86,6 +86,37 @@ def train_parallel(rank, world_size, kwargs):
     kwargs['rank'] = rank
 
     train(**kwargs)
+
+
+class MultiEpochsDataLoader(torch.utils.data.DataLoader):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._DataLoader__initialized = False
+        self.batch_sampler = _RepeatSampler(self.batch_sampler)
+        self._DataLoader__initialized = True
+        self.iterator = super().__iter__()
+
+    def __len__(self):
+        return len(self.batch_sampler.sampler)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield next(self.iterator)
+
+
+class _RepeatSampler(object):
+    """ Sampler that repeats forever.
+    Args:
+        sampler (Sampler)
+    """
+
+    def __init__(self, sampler):
+        self.sampler = sampler
+
+    def __iter__(self):
+        while True:
+            yield from iter(self.sampler)
 
 
 def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch_size: int, num_workers: int,
@@ -156,17 +187,15 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                 train_dataset, world_size, rank, seed=seed)
             val_sampler = DistributedSampler(
                 val_datset, world_size, rank, seed=seed)
-            loss_module.cuda(rank)
         # gpu with DataParallel
         else:
             model = model.cuda()
-            loss_module.cuda()
             model = nn.DataParallel(model)
         # any gpu use
         pin_memory = True
 
     train_dataloader = DataLoader(dataset=train_dataset, batch_size=batch_size,
-                                  num_workers=num_workers, pin_memory=pin_memory, sampler=train_sampler, drop_last=True)
+                                  num_workers=num_workers, pin_memory=pin_memory, sampler=train_sampler, drop_last=True, persistent_workers=True)
     val_dataloader = DataLoader(dataset=val_datset, batch_size=batch_size,
                                 num_workers=num_workers, pin_memory=pin_memory, sampler=val_sampler, drop_last=True)
 
@@ -175,33 +204,35 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
         pbar = tqdm(total=len(train_dataloader))
 
     example_number = 0
-    accumulated_loss = 0.0
-    accumulated_acc = 0.0
-
     for epoch in range(epochs):
-        pbar.set_description(f'Epoch {epoch}')
+        if rank == 0:
+            pbar.set_description(f'Epoch {epoch}')
+
+        steps_since_training_interval = 0
+        accumulated_loss = 0.0
+        accumulated_acc = 0.0
         # TRAIN EPOCH
         for step, batch in enumerate(train_dataloader):
 
             example_number += batch_size
+            steps_since_training_interval += 1
             # get batch
             x, y = batch
 
-            # Transfer Data to GPU if available
+            optimizer.zero_grad(set_to_none=True)
+
             if use_gpu:
+                x = x.cuda(rank, non_blocking=True)
                 y = y.cuda(rank, non_blocking=True)
 
             # foward pass
             y_hat = model(x)
-            if use_gpu:
-                target = target.cuda(rank, non_blocking=True)
 
             # compute loss
             loss = loss_module(y_hat, y)
 
             loss.backward()
             optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
 
             # record metrics
             cur_loss = loss.item()
@@ -216,10 +247,13 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                 pbar.update(1 * world_size)
                 if example_number % training_interval == 0:
 
+                    if accumulated_acc < 0.5:
+                        print(f'err! acc at {accumulated_acc} on step {step}')
+
                     per_example_loss = round(
-                        accumulated_loss / training_interval, 3)
+                        accumulated_loss / steps_since_training_interval, 3)
                     per_example_acc = round(
-                        accumulated_acc / training_interval, 3)
+                        accumulated_acc / steps_since_training_interval, 3)
 
                     t_writer.add_scalar(
                         'Loss', per_example_loss, example_number)
@@ -227,52 +261,52 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                         'Accuracy', per_example_acc, example_number)
                     accumulated_loss = 0.0
                     accumulated_acc = 0.0
+                    steps_since_training_interval = 0
+
+        if rank == 0:
+            pbar.refresh()
+            pbar.reset()
+
         # VAL STEP
-        accumulated_loss = 0.0
-        accumulated_acc = 0.0
-        if rank == 0:
-            vpbar = tqdm(total=len(val_dataloader))
-            vpbar.set_description(f'Validation')
-        for step, batch in tqdm(enumerate(val_dataloader)):
-            # get batch
-            x, y = batch
-            # Transfer Data to GPU if available
-            if use_gpu:
-                y = y.cuda(rank, non_blocking=True)
-            # foward pass
-            with torch.no_grad():
-                y_hat = model(x)
-
-                if use_gpu:
-                    target = target.cuda(rank, non_blocking=True)
-
-                # compute loss
-                loss = loss_module(y_hat, y)
-
-                loss.backward()
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-
-            # record metrics
-            cur_loss = loss.item()
-            accumulated_loss += cur_loss
-            pred = predict_class(y_hat)
-            accs = get_accuracy(y, pred)
-            accumulated_acc += accs['total_acc']
-        # record validation
-        if rank == 0:
-            vpbar.update(1 * world_size)
-            per_example_loss = round(
-                accumulated_loss / len(val_dataloader), 3)
-            per_example_acc = round(
-                accumulated_acc / len(val_dataloader), 3)
-
-            v_writer.add_scalar(
-                'Loss', per_example_loss, example_number)
-            v_writer.add_scalar(
-                'Accuracy', per_example_acc, example_number)
+        if validation_interval != 0 and epoch % validation_interval == 0:
             accumulated_loss = 0.0
             accumulated_acc = 0.0
+            if rank == 0:
+                print('start validation')
+
+            with torch.no_grad():
+                for step, batch in enumerate(val_dataloader):
+                    # get batch
+                    x, y = batch
+
+                    if use_gpu:
+                        x = x.cuda(rank, non_blocking=True)
+                        y = y.cuda(rank, non_blocking=True)
+
+                        y_hat = model(x)
+                        # compute loss
+                        loss = loss_module(y_hat, y)
+
+                    # record metrics
+                    cur_loss = loss.item()
+                    accumulated_loss += cur_loss
+                    pred = predict_class(y_hat)
+                    accs = get_accuracy(y, pred)
+                    accumulated_acc += accs['total_acc']
+
+            # record validation
+            if rank == 0:
+                per_example_loss = round(
+                    accumulated_loss / len(val_dataloader), 3)
+                per_example_acc = round(
+                    accumulated_acc / len(val_dataloader), 3)
+
+                v_writer.add_scalar(
+                    'Loss', per_example_loss, example_number)
+                v_writer.add_scalar(
+                    'Accuracy', per_example_acc, example_number)
+
+                print('end validation')
 
         # VAL STEP
     if rank == 0:

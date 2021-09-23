@@ -35,9 +35,9 @@ class DatasetConfig:
     radius: int = 96
     context_slices: int = 6
     num_points: int = 1024
-    batch_size: int = 64
     val_split: float = 0.15
     epoch_multplier: int = 1
+    verbose: bool = False
 
 
 @dataclass
@@ -78,7 +78,7 @@ def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: Augment
     # build dataset
     dataset = SplitterDataset(
         vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices,
-        num_points=dataset_config.num_points, Augmentor=augmentor, open_vol=True, epoch_multplier=dataset_config.epoch_multplier, shuffle=True, torch=True)
+        num_points=dataset_config.num_points, Augmentor=augmentor, open_vol=True, epoch_multplier=dataset_config.epoch_multplier,  verbose=dataset_config.verbose, shuffle=True, torch=True)
 
     # split into train and val
     split = math.floor(len(dataset)*dataset_config.val_split)

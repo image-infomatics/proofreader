@@ -25,7 +25,7 @@ def get_accuracy(y, pred):
     total_acc = torch.mean(correct)
     true_acc = torch.mean(correct[y == 1])
     false_acc = torch.mean(correct[y == 0])
-    return {'total_acc': total_acc, 'true_acc': true_acc, 'false_acc': false_acc}
+    return {'total_acc': total_acc.item(), 'true_acc': true_acc.item(), 'false_acc': false_acc.item()}
 
 
 class Classifier(pl.LightningModule):

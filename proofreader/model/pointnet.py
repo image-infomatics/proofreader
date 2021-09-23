@@ -25,6 +25,7 @@ class STN3d(nn.Module):
         self.bn3 = nn.BatchNorm1d(1024)
         self.bn4 = nn.BatchNorm1d(512)
         self.bn5 = nn.BatchNorm1d(256)
+        self.register_buffer('iden', torch.tensor([1, 0, 0, 0, 1, 0, 0, 0, 1], dtype=torch.float32))
 
     def forward(self, x):
         batchsize = x.size()[0]
@@ -38,11 +39,7 @@ class STN3d(nn.Module):
         x = F.relu(self.bn5(self.fc2(x)))
         x = self.fc3(x)
 
-        iden = Variable(torch.from_numpy(np.array([1, 0, 0, 0, 1, 0, 0, 0, 1]).astype(
-            np.float32))).view(1, 9).repeat(batchsize, 1)
-        if x.is_cuda:
-            iden = iden.cuda()
-        x = x + iden
+        x = x[:] + self.iden
         x = x.view(-1, 3, 3)
         return x
 
@@ -101,16 +98,20 @@ class PointNetCls(nn.Module):
 
 
 if __name__ == '__main__':
+    torch.manual_seed(0)
     num_points = 1024
-    batch_size = 16
+    batch_size = 4
     num_feature = 3
     print(
         f'num_points {num_points}, batch_size {batch_size}, num_feature {num_feature}')
+        
     sim_data = torch.rand(batch_size, num_feature, num_points)
-    print(sim_data.dtype)
+
     trans = STN3d(num_points=num_points)
     out = trans(sim_data)
     print('stn', out.size())
+    print('stn', out)
+
 
     pointfeat = PointNetfeat(num_points=num_points, global_feat=True)
     out, _ = pointfeat(sim_data)
