@@ -1,17 +1,18 @@
+import torch
+import torch.nn as nn
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
-import torch
+
 from proofreader.data.cremi import prepare_cremi_vols
 from proofreader.model.classifier import *
 from proofreader.model.config import *
 from proofreader.utils.all import get_cpu_count
 
-from torch.utils.tensorboard import SummaryWriter
-import torch.nn as nn
-import torch
 import numpy as np
 import click
 from tqdm import tqdm

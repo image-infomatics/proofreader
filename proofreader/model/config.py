@@ -2,17 +2,15 @@ import math
 import pprint
 from dataclasses import dataclass
 
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import Subset
 
 import torch
 import torch.nn.functional as F
 
 from proofreader.data.splitter import SplitterDataset
 from proofreader.data.augment import Augmentor
-from proofreader.model.classifier import Classifier
 from proofreader.model.pointnet import PointNet
 from proofreader.model.curvenet import CurveNet
-from proofreader.utils.all import get_cpu_count
 
 
 @dataclass
