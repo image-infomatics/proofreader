@@ -13,7 +13,8 @@ import torch.nn.functional as F
 from proofreader.data.splitter import SplitterDataset
 from proofreader.data.augment import Augmentor
 from proofreader.model.classifier import Classifier
-from proofreader.model.pointnet import PointNetCls
+from proofreader.model.pointnet import PointNet
+from proofreader.model.curvenet import CurveNet
 from proofreader.utils.all import get_cpu_count
 
 
@@ -43,7 +44,7 @@ class DatasetConfig:
 @dataclass
 class ModelConfig:
     model: str = 'pointnet'
-    loss = str = 'nll'
+    loss: str = 'nll'
     optimizer: str = 'AdamW'
     dim: int = 256
     learning_rate: float = 1e-3
@@ -128,7 +129,7 @@ def build_model_from_config(model_config: ModelConfig, dataset_config: DatasetCo
         loss = F.cross_entropy
 
     if model_config.model == 'pointnet':
-        backbone = PointNetCls(num_points=dataset_config.num_points)
+        backbone = PointNet(num_points=dataset_config.num_points)
 
     model = Classifier(backbone=backbone, loss=loss,
                        learning_rate=model_config.learning_rate)
@@ -136,13 +137,19 @@ def build_model_from_config(model_config: ModelConfig, dataset_config: DatasetCo
 
 
 def build_full_model_from_config(model_config: ModelConfig, dataset_config: DatasetConfig):
+    # loss
     if model_config.loss == 'nll':
         loss = F.nll_loss
     elif model_config.loss == 'ce':
         loss = F.cross_entropy
 
+    # optimizer
     if model_config.model == 'pointnet':
-        model = PointNetCls(num_points=dataset_config.num_points)
+        model = PointNet(num_points=dataset_config.num_points)
+    elif model_config.model == 'curvenet':
+        model = CurveNet()
+
+    # optimizer
     if model_config.optimizer == 'AdamW':
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=model_config.learning_rate, betas=(0.9, 0.999), weight_decay=0.05)
@@ -167,4 +174,6 @@ def get_config(name):
 
 CONFIGS = [
     ExperimentConfig('default'),
+    ExperimentConfig('curvenet', model=ModelConfig(
+        model='curvenet', loss='ce')),
 ]

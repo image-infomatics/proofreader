@@ -65,7 +65,7 @@ import shutil
 #               type=bool, default=True, help='whether to use distrubited automatic mixed percision.'
 #               )
 @click.option('--ddp',
-              type=bool, default=True, help='whether to use distrubited data parallel vs normal data parallel.'
+              type=bool, default=False, help='whether to use distrubited data parallel vs normal data parallel.'
               )
 def train_wrapper(*args, **kwargs):
     if kwargs['ddp']:

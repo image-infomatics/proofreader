@@ -25,7 +25,8 @@ class STN3d(nn.Module):
         self.bn3 = nn.BatchNorm1d(1024)
         self.bn4 = nn.BatchNorm1d(512)
         self.bn5 = nn.BatchNorm1d(256)
-        self.register_buffer('iden', torch.tensor([1, 0, 0, 0, 1, 0, 0, 0, 1], dtype=torch.float32))
+        self.register_buffer('iden', torch.tensor(
+            [1, 0, 0, 0, 1, 0, 0, 0, 1], dtype=torch.float32))
 
     def forward(self, x):
         batchsize = x.size()[0]
@@ -77,9 +78,9 @@ class PointNetfeat(nn.Module):
             return torch.cat([x, pointfeat], 1), trans
 
 
-class PointNetCls(nn.Module):
+class PointNet(nn.Module):
     def __init__(self, num_points, classes=2):
-        super(PointNetCls, self).__init__()
+        super(PointNet, self).__init__()
         self.num_points = num_points
         self.feat = PointNetfeat(num_points, global_feat=True)
         self.fc1 = nn.Linear(1024, 512)
@@ -104,14 +105,13 @@ if __name__ == '__main__':
     num_feature = 3
     print(
         f'num_points {num_points}, batch_size {batch_size}, num_feature {num_feature}')
-        
+
     sim_data = torch.rand(batch_size, num_feature, num_points)
 
     trans = STN3d(num_points=num_points)
     out = trans(sim_data)
     print('stn', out.size())
     print('stn', out)
-
 
     pointfeat = PointNetfeat(num_points=num_points, global_feat=True)
     out, _ = pointfeat(sim_data)
@@ -121,7 +121,7 @@ if __name__ == '__main__':
     out, _ = pointfeat(sim_data)
     print('point feat', out.size())
 
-    cls = PointNetCls(num_points=num_points, classes=5)
+    cls = PointNet(num_points=num_points, classes=5)
     out = cls(sim_data)
     print('class', out.size())
     print('out range', torch.min(out), torch.max(out))
