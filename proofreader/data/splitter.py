@@ -5,12 +5,15 @@ import torch
 import random
 import cc3d
 from proofreader.utils.all import list_remove, split_int
+from proofreader.utils.vis import make_histogram
 from proofreader.utils.data import random_sample_arr, circular_mask, crop_where
 from proofreader.data.augment import Augmentor
 from proofreader.data.cremi import prepare_cremi_vols
 from skimage.segmentation import find_boundaries
 from scipy import ndimage
-
+import time
+from torch.utils.data import DataLoader
+from proofreader.utils.torch import *
 
 def get_classes_sorted_by_volume(vol, reverse=False, return_counts=False):
 
@@ -68,7 +71,7 @@ def convert_grid_to_pointcloud(vol, threshold=0, keep_features=False):
     return cords.astype(np.float32)
 
 
-class SplitterDataset(torch.utils.data.IterableDataset):
+class SplitterDataset(torch.utils.data.Dataset):
     def __init__(self,
                  vols: List,
                  num_slices: int,
@@ -105,7 +108,7 @@ class SplitterDataset(torch.utils.data.IterableDataset):
         """
 
         super().__init__()
-
+        print('init dataset')
         if isinstance(num_slices, int):
             num_slices = [num_slices, num_slices]
         else:
@@ -388,10 +391,30 @@ if __name__ == '__main__':
     radius = 96
     context_slices = 6
     num_points = 1024
+    batch_size = 128
+    num_workers = 128
+    print('reading vols...')
+    train_vols, test_vols = prepare_cremi_vols('./dataset/cremi')
 
-    train_vols, test_vols = prepare_cremi_vols('../../dataset/cremi')
-
+    print('building dataset...')
     augmentor = Augmentor(center=True, shuffle=True, rotate=True, scale=True)
-    dataset = SplitterDataset(train_vols, num_slices, radius, context_slices,
-                              num_points=num_points, torch=True, open_vol=True, verbose=True,  epoch_multplier=10, shuffle=True, Augmentor=augmentor)
+    dataset = SplitterDataset(train_vols, num_slices, radius, context_slices, num_points=num_points, torch=True, open_vol=True, Augmentor=augmentor)
     print(len(dataset))
+    print('building dataloader...')
+    dataloader = DataLoader(dataset=dataset, batch_size=batch_size, num_workers=num_workers)
+    print(len(dataloader))
+        
+    epochs = 5
+    times = []
+    for e in range(epochs):
+        start = time.time()
+        for i, batch in enumerate(dataloader):
+            taken = time.time() - start
+            
+            times.append(taken)
+            print(f'{i} took {taken}')
+            start = time.time()
+        
+        
+    # make_histogram(times, bins=len(dataloader)//4)
+    print(min(times), max(times))

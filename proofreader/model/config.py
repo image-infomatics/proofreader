@@ -87,20 +87,6 @@ def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: Augment
     return ds_train, ds_val
 
 
-# def build_model_from_config(model_config: ModelConfig, dataset_config: DatasetConfig):
-#     if model_config.loss == 'nll':
-#         loss = F.nll_loss
-#     elif model_config.loss == 'ce':
-#         loss = F.cross_entropy
-
-#     if model_config.model == 'pointnet':
-#         backbone = PointNet(num_points=dataset_config.num_points)
-
-#     model = Classifier(backbone=backbone, loss=loss,
-#                        learning_rate=model_config.learning_rate)
-#     return model
-
-
 def build_full_model_from_config(model_config: ModelConfig, dataset_config: DatasetConfig):
     # loss
     if model_config.loss == 'nll':
@@ -122,14 +108,6 @@ def build_full_model_from_config(model_config: ModelConfig, dataset_config: Data
     return model, loss, optimizer
 
 
-# def build_trainer_from_config(config: TrainerConfig, args):
-#     logger = TensorBoardLogger(save_dir='~/ceph/pf', name=args.config)
-
-#     trainer = Trainer.from_argparse_args(
-#         args, deterministic=config.deterministic, log_every_n_steps=100, logger=logger, num_sanity_val_steps=0)
-#     return trainer
-
-
 def get_config(name):
     for c in CONFIGS:
         if c.name == name:
@@ -141,4 +119,7 @@ CONFIGS = [
     ExperimentConfig('pointnet'),
     ExperimentConfig('curvenet', model=ModelConfig(
         model='curvenet', loss='ce')),
+    ExperimentConfig('pn_context_2', dataset=DatasetConfig(context_slices=2)),
+    ExperimentConfig('pn_context_1', dataset=DatasetConfig(context_slices=1)),
+    ExperimentConfig('pn_context_8', dataset=DatasetConfig(context_slices=8)),
 ]

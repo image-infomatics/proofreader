@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from proofreader.data.cremi import prepare_cremi_vols
 from proofreader.model.classifier import *
 from proofreader.model.config import *
-from proofreader.utils.torch import get_cpu_count, count_all_live_tensors
+from proofreader.utils.torch import *
 
 import numpy as np
 import click
@@ -86,37 +86,6 @@ def train_parallel(rank, world_size, kwargs):
     kwargs['rank'] = rank
 
     train(**kwargs)
-
-
-class MultiEpochsDataLoader(torch.utils.data.DataLoader):
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._DataLoader__initialized = False
-        self.batch_sampler = _RepeatSampler(self.batch_sampler)
-        self._DataLoader__initialized = True
-        self.iterator = super().__iter__()
-
-    def __len__(self):
-        return len(self.batch_sampler.sampler)
-
-    def __iter__(self):
-        for i in range(len(self)):
-            yield next(self.iterator)
-
-
-class _RepeatSampler(object):
-    """ Sampler that repeats forever.
-    Args:
-        sampler (Sampler)
-    """
-
-    def __init__(self, sampler):
-        self.sampler = sampler
-
-    def __iter__(self):
-        while True:
-            yield from iter(self.sampler)
 
 
 def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch_size: int, num_workers: int,
@@ -249,9 +218,6 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                 pbar.update(1 * world_size)
                 if example_number % training_interval == 0:
 
-                    if accumulated_acc < 0.5:
-                        print(f'err! acc at {accumulated_acc} on step {step}')
-
                     per_example_loss = round(
                         accumulated_loss / steps_since_training_interval, 3)
                     per_example_acc = round(
@@ -297,7 +263,6 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
 
             # record validation
             if rank == 0:
-            
                 per_example_loss = round(
                     accumulated_loss / len(val_dataloader), 3)
                 per_example_acc = round(
@@ -307,8 +272,6 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                     'Loss', per_example_loss, example_number)
                 v_writer.add_scalar(
                     'Accuracy', per_example_acc, example_number)
-
-                print('end validation')
 
         # VAL STEP
     if rank == 0:
