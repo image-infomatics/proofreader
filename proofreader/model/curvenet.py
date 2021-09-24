@@ -13,6 +13,7 @@ COPIED FROM https://github.com/tiangexiang/CurveNet/tree/main/core/models
 """
 
 from proofreader.model.classifier import *
+from proofreader.utils.torch import *
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -211,13 +212,13 @@ def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
         new_points: sampled points data, [B, npoint, nsample, 3+D]
     """
     new_xyz = index_points(xyz, farthest_point_sample(xyz, npoint))
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 
     idx = query_ball_point(radius, nsample, xyz, new_xyz)
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 
     new_points = index_points(points, idx)
-    torch.cuda.empty_cache()
+    # torch.cuda.empty_cache()
 
     if returnfps:
         return new_xyz, new_points, idx
@@ -263,7 +264,6 @@ class LPFA(nn.Module):
     def __init__(self, in_channel, out_channel, k, mlp_num=2, initial=False):
         super(LPFA, self).__init__()
         self.k = k
-        self.device = torch.device('cuda')
         self.initial = initial
 
         if not initial:
@@ -297,9 +297,10 @@ class LPFA(nn.Module):
             # (batch_size, num_points, k)
             idx = knn(xyz, k=self.k)[:, :, :self.k]
 
-        idx_base = torch.arange(
-            0, batch_size, device=self.device).view(-1, 1, 1) * num_points
 
+        idx_base = torch.arange(
+            0, batch_size, device=idx.device).view(-1, 1, 1) * num_points
+        
         idx = idx + idx_base
         idx = idx.view(-1)
 
@@ -665,7 +666,7 @@ class Walk(nn.Module):
 
         flatten_x = x.view(bn * tot_points, -1)
         batch_offset = torch.arange(
-            0, bn, device=torch.device('cuda')).detach() * tot_points
+            0, bn, device=x.device).detach() * tot_points
 
         # indices of neighbors for the starting points
         tmp_adj = (adj + batch_offset.view(-1, 1, 1)
@@ -760,12 +761,13 @@ if __name__ == '__main__':
     k = 20
     print(
         f'num_points {num_points}, batch_size {batch_size}, k {k}, num_classes {num_classes}')
+    model = CurveNet(num_classes=num_classes, k=k)
+    
+    for i in range(100):
+        x = torch.rand(batch_size, 3, num_points)
+        y_hat = model(x)
+        print(count_all_live_tensors())
 
-    x = torch.rand(batch_size, 3, num_points)
-
-    model = CurveNet(num_classes=num_classes,   k=k)
-
-    y_hat = model(x)
     print(f'in shape {x.shape}')
     print(f'out shape {y_hat.shape}')
 

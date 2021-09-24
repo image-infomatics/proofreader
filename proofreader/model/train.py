@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from proofreader.data.cremi import prepare_cremi_vols
 from proofreader.model.classifier import *
 from proofreader.model.config import *
-from proofreader.utils.all import get_cpu_count
+from proofreader.utils.torch import get_cpu_count, count_all_live_tensors
 
 import numpy as np
 import click
@@ -22,7 +22,7 @@ import random
 
 @click.command()
 @click.option('--config',
-              type=str, default='default',
+              type=str,
               help='name of the configuration defined in the config list'
               )
 @click.option('--path',
@@ -194,10 +194,11 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
         # any gpu use
         pin_memory = True
 
-    train_dataloader = DataLoader(dataset=train_dataset, batch_size=batch_size,
-                                  num_workers=num_workers, pin_memory=pin_memory, sampler=train_sampler, drop_last=True, persistent_workers=True)
-    val_dataloader = DataLoader(dataset=val_datset, batch_size=batch_size,
-                                num_workers=num_workers, pin_memory=pin_memory, sampler=val_sampler, drop_last=True)
+    val_workers = 4
+    train_dataloader = MultiEpochsDataLoader(dataset=train_dataset, batch_size=batch_size,
+                                             num_workers=num_workers, pin_memory=pin_memory, sampler=train_sampler, drop_last=True, persistent_workers=True)
+    val_dataloader = MultiEpochsDataLoader(dataset=val_datset, batch_size=batch_size,
+                                num_workers=val_workers, pin_memory=pin_memory, sampler=val_sampler, drop_last=True)
 
     if rank == 0:
         print("starting...")
@@ -206,6 +207,8 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
     example_number = 0
     for epoch in range(epochs):
         if rank == 0:
+            pbar.refresh()
+            pbar.reset()
             pbar.set_description(f'Epoch {epoch}')
 
         steps_since_training_interval = 0
@@ -213,7 +216,6 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
         accumulated_acc = 0.0
         # TRAIN EPOCH
         for step, batch in enumerate(train_dataloader):
-
             example_number += batch_size
             steps_since_training_interval += 1
             # get batch
@@ -263,17 +265,14 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                     accumulated_acc = 0.0
                     steps_since_training_interval = 0
 
-        if rank == 0:
-            pbar.refresh()
-            pbar.reset()
-
         # VAL STEP
         if validation_interval != 0 and epoch % validation_interval == 0:
             accumulated_loss = 0.0
             accumulated_acc = 0.0
             if rank == 0:
-                print('start validation')
-
+                pbar.refresh()
+                pbar.reset()
+                pbar.set_description(f'Validation')
             with torch.no_grad():
                 for step, batch in enumerate(val_dataloader):
                     # get batch
@@ -293,9 +292,12 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                     pred = predict_class(y_hat)
                     accs = get_accuracy(y, pred)
                     accumulated_acc += accs['total_acc']
+                    if rank == 0:
+                        pbar.update(1 * world_size)
 
             # record validation
             if rank == 0:
+            
                 per_example_loss = round(
                     accumulated_loss / len(val_dataloader), 3)
                 per_example_acc = round(

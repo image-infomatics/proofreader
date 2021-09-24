@@ -68,7 +68,7 @@ def convert_grid_to_pointcloud(vol, threshold=0, keep_features=False):
     return cords.astype(np.float32)
 
 
-class SplitterDataset(torch.utils.data.Dataset):
+class SplitterDataset(torch.utils.data.IterableDataset):
     def __init__(self,
                  vols: List,
                  num_slices: int,
@@ -374,6 +374,8 @@ class SplitterDataset(torch.utils.data.Dataset):
         return (pc_example, label)
 
     def __getitem__(self, index):
+
+        # return torch.from_numpy(np.random.rand(3, self.num_points)).type(torch.float32), torch.tensor(np.int64(index % 2 == 0)).type(torch.LongTensor)
         return self.get_example(index)
 
     def __len__(self):

@@ -138,7 +138,7 @@ def get_config(name):
 
 
 CONFIGS = [
-    ExperimentConfig('default'),
+    ExperimentConfig('pointnet'),
     ExperimentConfig('curvenet', model=ModelConfig(
         model='curvenet', loss='ce')),
 ]
