@@ -15,6 +15,7 @@ import time
 from torch.utils.data import DataLoader
 from proofreader.utils.torch import *
 
+
 def get_classes_sorted_by_volume(vol, reverse=False, return_counts=False):
 
     classes, counts = np.unique(vol, return_counts=True)
@@ -398,23 +399,55 @@ if __name__ == '__main__':
 
     print('building dataset...')
     augmentor = Augmentor(center=True, shuffle=True, rotate=True, scale=True)
-    dataset = SplitterDataset(train_vols, num_slices, radius, context_slices, num_points=num_points, torch=True, open_vol=True, Augmentor=augmentor)
+    dataset = SplitterDataset(train_vols, num_slices, radius, context_slices,
+                              num_points=num_points, torch=True, open_vol=True, Augmentor=augmentor)
     print(len(dataset))
     print('building dataloader...')
-    dataloader = DataLoader(dataset=dataset, batch_size=batch_size, num_workers=num_workers)
+    dataloader = DataLoader(
+        dataset=dataset, batch_size=batch_size, num_workers=num_workers)
     print(len(dataloader))
-        
+
     epochs = 5
     times = []
     for e in range(epochs):
         start = time.time()
         for i, batch in enumerate(dataloader):
             taken = time.time() - start
-            
+
             times.append(taken)
             print(f'{i} took {taken}')
             start = time.time()
-        
-        
+
     # make_histogram(times, bins=len(dataloader)//4)
     print(min(times), max(times))
+
+
+class SplitterTest():
+    def __init__(self,
+                 vols: List,
+                 num_slices: int,
+                 radius: int,
+                 context_slices: int,
+                 num_points: int = None,
+                 open_vol: bool = True,
+                 shuffle: bool = False,
+                 verbose: bool = False,
+                 Augmentor: Augmentor = Augmentor(),
+                 ):
+
+        self.vols = vols
+        self.num_slices = num_slices
+        self.radius = radius
+        self.context_slices = context_slices
+        self.num_points = num_points
+        self.open_vol = open_vol
+
+        self.shuffle = shuffle
+        self.verbose = verbose
+        self.Augmentor = Augmentor
+
+    def test_iter(self, vol, model, drop):
+        pass
+
+    def test_eval(self, model):
+        pass

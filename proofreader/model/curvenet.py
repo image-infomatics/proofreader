@@ -297,10 +297,9 @@ class LPFA(nn.Module):
             # (batch_size, num_points, k)
             idx = knn(xyz, k=self.k)[:, :, :self.k]
 
-
         idx_base = torch.arange(
             0, batch_size, device=idx.device).view(-1, 1, 1) * num_points
-        
+
         idx = idx + idx_base
         idx = idx.view(-1)
 
@@ -762,7 +761,7 @@ if __name__ == '__main__':
     print(
         f'num_points {num_points}, batch_size {batch_size}, k {k}, num_classes {num_classes}')
     model = CurveNet(num_classes=num_classes, k=k)
-    
+
     for i in range(100):
         x = torch.rand(batch_size, 3, num_points)
         y_hat = model(x)

@@ -122,4 +122,8 @@ CONFIGS = [
     ExperimentConfig('pn_context_2', dataset=DatasetConfig(context_slices=2)),
     ExperimentConfig('pn_context_1', dataset=DatasetConfig(context_slices=1)),
     ExperimentConfig('pn_context_8', dataset=DatasetConfig(context_slices=8)),
+    ExperimentConfig('cn_context_2', model=ModelConfig(
+        model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=2)),
+    ExperimentConfig('cn_context_1', model=ModelConfig(
+        model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=1)),
 ]

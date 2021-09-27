@@ -167,7 +167,7 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
     train_dataloader = MultiEpochsDataLoader(dataset=train_dataset, batch_size=batch_size,
                                              num_workers=num_workers, pin_memory=pin_memory, sampler=train_sampler, drop_last=True, persistent_workers=True)
     val_dataloader = MultiEpochsDataLoader(dataset=val_datset, batch_size=batch_size,
-                                num_workers=val_workers, pin_memory=pin_memory, sampler=val_sampler, drop_last=True)
+                                           num_workers=val_workers, pin_memory=pin_memory, sampler=val_sampler, drop_last=True)
 
     if rank == 0:
         print("starting...")
