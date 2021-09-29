@@ -5,15 +5,17 @@ import torch
 import random
 import cc3d
 from proofreader.utils.all import list_remove, split_int
-from proofreader.utils.vis import make_histogram
+from proofreader.utils.vis import grid_volume, make_histogram
 from proofreader.utils.data import random_sample_arr, circular_mask, crop_where
 from proofreader.data.augment import Augmentor
 from proofreader.data.cremi import prepare_cremi_vols
+from proofreader.model.classifier import predict_class
 from skimage.segmentation import find_boundaries
 from scipy import ndimage
 import time
 from torch.utils.data import DataLoader
 from proofreader.utils.torch import *
+from skimage import color
 
 
 def get_classes_sorted_by_volume(vol, reverse=False, return_counts=False):
@@ -70,6 +72,18 @@ def convert_grid_to_pointcloud(vol, threshold=0, keep_features=False):
     cords = np.swapaxes(cords, 0, 1)
 
     return cords.astype(np.float32)
+
+
+def correspond_labels(key, val, bg_label=0):
+    res = {}
+    classes = np.unique(key)
+    for c in classes:
+        if c != bg_label:
+            corr = np.unique(val[key == c])
+            if len(corr) > 1:
+                print('warn, multiple correspondance')
+            res[c] = corr[-1]
+    return res
 
 
 class SplitterDataset(torch.utils.data.Dataset):
@@ -254,8 +268,6 @@ class SplitterDataset(torch.utils.data.Dataset):
         # Do connected component relabeling to ensure only one fragment on bottom #
         # The mask and radius are needed for both positive and negative examples #
         # So that after connected components we can pick a fragment near the top neurite #
-
-        # plus minus one is hack to fix bug in cc3d https://github.com/seung-lab/connected-components-3d/issues/74
         bot_vol_section_relabeled = cc3d.connected_components(bot_vol_section)
 
         bot_border_relabled = bot_vol_section_relabeled[0]
@@ -379,47 +391,10 @@ class SplitterDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
 
-        # return torch.from_numpy(np.random.rand(3, self.num_points)).type(torch.float32), torch.tensor(np.int64(index % 2 == 0)).type(torch.LongTensor)
         return self.get_example(index)
 
     def __len__(self):
         return self.effective_length
-
-
-if __name__ == '__main__':
-
-    num_slices = [1, 4]
-    radius = 96
-    context_slices = 6
-    num_points = 1024
-    batch_size = 128
-    num_workers = 128
-    print('reading vols...')
-    train_vols, test_vols = prepare_cremi_vols('./dataset/cremi')
-
-    print('building dataset...')
-    augmentor = Augmentor(center=True, shuffle=True, rotate=True, scale=True)
-    dataset = SplitterDataset(train_vols, num_slices, radius, context_slices,
-                              num_points=num_points, torch=True, open_vol=True, Augmentor=augmentor)
-    print(len(dataset))
-    print('building dataloader...')
-    dataloader = DataLoader(
-        dataset=dataset, batch_size=batch_size, num_workers=num_workers)
-    print(len(dataloader))
-
-    epochs = 5
-    times = []
-    for e in range(epochs):
-        start = time.time()
-        for i, batch in enumerate(dataloader):
-            taken = time.time() - start
-
-            times.append(taken)
-            print(f'{i} took {taken}')
-            start = time.time()
-
-    # make_histogram(times, bins=len(dataloader)//4)
-    print(min(times), max(times))
 
 
 class SplitterTest():
@@ -429,10 +404,6 @@ class SplitterTest():
                  radius: int,
                  context_slices: int,
                  num_points: int = None,
-                 open_vol: bool = True,
-                 shuffle: bool = False,
-                 verbose: bool = False,
-                 Augmentor: Augmentor = Augmentor(),
                  ):
 
         self.vols = vols
@@ -440,14 +411,148 @@ class SplitterTest():
         self.radius = radius
         self.context_slices = context_slices
         self.num_points = num_points
-        self.open_vol = open_vol
-
-        self.shuffle = shuffle
-        self.verbose = verbose
-        self.Augmentor = Augmentor
 
     def test_iter(self, vol, model, drop):
-        pass
+        res = {}
+        drop_start, drop_end = drop
+        # do connected compnent for both top and bottom sections
+        vol_relabeled = np.zeros_like(vol)
+        cs = self.context_slices
+
+        vol_relabeled[drop_start-cs:drop_start] = vol[drop_start-cs:drop_start]
+        vol_relabeled[drop_end:drop_end+cs] = vol[drop_end:drop_end+cs]
+
+        vol_relabeled = cc3d.connected_components(vol_relabeled)
+
+        label_map = correspond_labels(vol_relabeled, vol)
+
+        top_border = vol_relabeled[drop_start-1]
+        top_neurites = np.unique(top_border)
+
+        for c in top_neurites:
+            examples, labels = self.get_examples_from_top_class(
+                vol_relabeled, c, drop)
+            for x, l in zip(examples, labels):
+                y = label_map[l[0]] == label_map[l[1]]
+                y_hat = model(x)
+                pred = predict_class(y_hat)
+
+    def get_examples_from_top_class(self, vol, c, drop):
+
+        top_c = c
+        (sz, sy, sx) = vol.shape
+
+        # Find min and max z slice on which c occurs #
+        for i in range(sz):
+            if c in vol[i]:
+                zmin = i
+                break
+        for i in reversed(range(sz)):
+            if c in vol[i]:
+                zmax = i
+                break
+        # assert zmax - zmin >= num_slices + \
+        #     2, f'zspan of neurite must be at least 2 slices bigger than num_slices to drop, zspan:{zmax - zmin}, num_slices:{num_slices}'
+
+        drop_start, drop_end = drop
+        num_slices = drop_end - drop_start
+        top_z_len = min(self.context_slices, drop_start-zmin)
+        bot_z_len = min(self.context_slices, sz-drop_end)
+
+        # Alloc final vol, we dont know how large it will be in y and x but we know max z #
+        mz = num_slices + top_z_len + bot_z_len
+        final_vol = np.zeros((mz, sy, sx), dtype='uint')
+
+        # Build top section #
+        top_vol_section = final_vol[0:top_z_len]
+        top_vol_section[vol[drop_start-top_z_len:drop_start] == top_c] = top_c
+
+        # Get midpoint of neurite on 2D top cross section, #
+        top_border = top_vol_section[-1]
+        # use the relabeled top section
+        (com_x, com_y) = ndimage.measurements.center_of_mass(top_border)
+        (com_x, com_y) = round(com_x), round(com_y)
+
+        # Find all neurites with distnce D from that point on bottom cross section #
+        bot_border = vol[drop_end].copy()  # need copy because we zero
+        mask = circular_mask(
+            bot_border.shape[0], bot_border.shape[1], center=(com_y, com_x), radius=self.radius)
+        bot_border[~mask] = 0
+        mismatch_classes = list(np.unique(bot_border))
+
+        # Other wise select bottom class by picking 1 neurite from set of labels in radius #
+        assert mismatch_classes[0] == 0, 'first class should be 0, otherwise something went wrong'
+        # remove 0
+        mismatch_classes = list_remove(mismatch_classes, [0])
+
+        final_vol[0: top_z_len] = top_vol_section
+        final_examples = []
+        final_lables = []
+        for bot_c in mismatch_classes:
+
+            cur_vol = final_vol.copy()
+            # Build bot section #
+            bot_vol_section = cur_vol[num_slices+top_z_len:]
+            bot_vol_section[vol[drop_end:drop_end+bot_z_len] == bot_c] = bot_c
+
+            # Build final volume of bottom sections #
+            cur_vol[num_slices+top_z_len:] = bot_vol_section
+
+            pc = self.convert_volumetric_to_final(cur_vol)
+            final_examples.append(pc)
+            final_lables.append((top_c, bot_c))
+
+        return np.array(final_examples), final_lables
+
+    def remove_vol_interiors(self, vol):
+
+        def rm_interior(v):
+            return v * find_boundaries(
+                v, mode='inner')
+
+        for i in range(vol.shape[0]):
+            vol[i] = rm_interior(vol[i])
+
+        return vol
+
+    def convert_to_point_cloud(self, vol):
+
+        pc = convert_grid_to_pointcloud(vol)
+        if self.num_points is not None:
+            num_points = pc.shape[0]
+
+            if num_points < self.num_points:
+                pc = random_sample_arr(
+                    pc, count=self.num_points, replace=True)
+
+            else:
+                pc = random_sample_arr(pc, count=self.num_points)
+
+        return pc
+
+    def convert_volumetric_to_final(self, vol_example):
+
+        # final crop and relabel
+        vol_example = crop_where(vol_example, vol_example != 0)
+        vol_example = cc3d.connected_components(vol_example)
+
+        # sanity check
+        all_classes = np.unique(vol_example)
+        assert len(
+            all_classes) == 3, f'final sample should have 3 classes, [0, n1, n2] not {all_classes}'
+
+        grid_volume(color.label2rgb(vol_example, bg_label=0))
+
+        # remove interiors
+        vol_example = self.remove_vol_interiors(vol_example)
+
+        # convert to point cloud
+        pc_example = self.convert_to_point_cloud(vol_example)
+        pc_example = np.swapaxes(pc_example, 0, 1)
+
+        pc_example = torch.from_numpy(pc_example).type(torch.float32)
+
+        return pc_example
 
     def test_eval(self, model):
         pass
