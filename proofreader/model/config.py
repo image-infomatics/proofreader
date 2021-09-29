@@ -46,16 +46,10 @@ class ModelConfig:
 
 
 @dataclass
-class TrainerConfig:
-    deterministic: bool = True
-
-
-@dataclass
 class ExperimentConfig:
     name: str
     dataset: DatasetConfig = DatasetConfig()
     model: ModelConfig = ModelConfig()
-    trainer: TrainerConfig = TrainerConfig()
     augmentor: AugmentorConfig = AugmentorConfig()
 
     def toString(self):
@@ -126,4 +120,15 @@ CONFIGS = [
         model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=2)),
     ExperimentConfig('cn_context_1', model=ModelConfig(
         model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=1)),
+    ExperimentConfig('cn_context_4', model=ModelConfig(
+        model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=4)),
+    ExperimentConfig('cn_context_4_aug', model=ModelConfig(
+        model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=4),
+        augmentor=AugmentorConfig(shuffle=True, center=True, rotate=True, scale=True)),
+    ExperimentConfig('cn_context_4_aug_small', model=ModelConfig(
+        model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=4),
+        augmentor=AugmentorConfig(shuffle=True, center=True)),
+    ExperimentConfig('cn_context_4_aug_mid', model=ModelConfig(
+        model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=4),
+        augmentor=AugmentorConfig(shuffle=True, center=True, scale=True)),
 ]

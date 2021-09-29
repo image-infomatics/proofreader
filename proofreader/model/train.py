@@ -273,6 +273,8 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                 v_writer.add_scalar(
                     'Accuracy', per_example_acc, example_number)
 
+                save_model(model, output_dir, epoch=epoch, optimizer=optimizer)
+
         # VAL STEP
     if rank == 0:
         t_writer.close()

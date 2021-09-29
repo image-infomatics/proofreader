@@ -3,6 +3,7 @@ import gc
 import os
 from .all import readable_bytes
 
+
 def get_all_live_tensors():
     tensors = []
     for obj in gc.get_objects():
@@ -14,12 +15,12 @@ def get_all_live_tensors():
 
     return tensors
 
+
 def print_all_live_tensors():
     print('===========================TENSORS===========================')
     tensors = get_all_live_tensors()
     for t in tensors:
         print(obj.dtype, obj.device, type(obj), obj.size())
-
 
 
 def count_all_live_tensors():
@@ -29,7 +30,7 @@ def count_all_live_tensors():
     for t in tensors:
         count += 1
         mem += t.element_size() * t.nelement()
- 
+
     return count, readable_bytes(mem)
 
 
@@ -55,6 +56,40 @@ def get_cpu_count():
     print('could not get cpu count, returning 1')
 
     return 1
+
+
+def save_model(model, path, epoch=None, optimizer=None, loss=None):
+    """ Save trained network as file
+
+    Args:
+        model (nn.Module): current model
+        path (str): file path of saved model
+        epoch (int): current epoch
+        optimizer (Optimizer): current optimizer
+        loss (float): current loss
+    """
+
+    path = os.path.join(path, 'checkpoints')
+
+    # make folder if doesnt exist
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+    fname = os.path.join(path, f'{epoch}.ckpt')
+    state = {'epoch': epoch,
+             'model_state_dict': model.state_dict(),
+             'optimizer_state_dict': optimizer.state_dict(),
+             'loss': loss, }
+    torch.save(state, fname)
+
+
+def load_model(model, path, optimizer=None,):
+    checkpoint = torch.load(path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    if optimizer is not None:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        return model, optimizer
+    return model
 
 
 class MultiEpochsDataLoader(torch.utils.data.DataLoader):
