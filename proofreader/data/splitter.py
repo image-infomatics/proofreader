@@ -5,15 +5,12 @@ import torch
 import random
 import cc3d
 from proofreader.utils.all import list_remove, split_int
-from proofreader.utils.vis import grid_volume, make_histogram
-from proofreader.utils.data import random_sample_arr, circular_mask, crop_where
+from proofreader.utils.vis import *
+from proofreader.utils.data import *
 from proofreader.data.augment import Augmentor
-from proofreader.data.cremi import prepare_cremi_vols
-from proofreader.model.classifier import predict_class
+from proofreader.model.classifier import predict_class, get_accuracy
 from skimage.segmentation import find_boundaries
 from scipy import ndimage
-import time
-from torch.utils.data import DataLoader
 from proofreader.utils.torch import *
 from skimage import color
 
@@ -84,6 +81,44 @@ def correspond_labels(key, val, bg_label=0):
                 print('warn, multiple correspondance')
             res[c] = corr[-1]
     return res
+
+
+def balance_binary_batch(batch, labels, shuffle=False):
+    """
+    Takes a batch of examples and labels of [0,1] and copies randomly samples
+    copies of which ever class is under represented until there is equal
+    representation of each class .
+    """
+
+    half = len(labels) // 2
+    num_1 = torch.count_nonzero(labels).squeeze()
+    num_0 = len(labels) - num_1
+    if num_0 == 0 or num_1 == 0:
+        return batch, labels
+    elif num_1 < half:
+        rebalance_label = 1
+        num = num_1
+    elif num_0 < half:
+        rebalance_label = 0
+        num = num_0
+    else:
+        return batch, labels
+
+    add_amt = int(half - num)
+    trues_indices = (labels == 1).nonzero().view(-1)
+    new_trues_indices = random_sample_arr(
+        trues_indices, count=add_amt, replace=True)
+
+    new_labels = (torch.zeros((add_amt)) + rebalance_label)
+
+    expanded_batch = torch.cat((batch, batch[new_trues_indices]))
+    expanded_lables = torch.cat((labels, new_labels))
+
+    if shuffle:
+        expanded_batch, expanded_lables = equivariant_shuffle(
+            expanded_batch, expanded_lables)
+
+    return expanded_batch, expanded_lables
 
 
 class SplitterDataset(torch.utils.data.Dataset):
@@ -404,6 +439,7 @@ class SplitterTest():
                  radius: int,
                  context_slices: int,
                  num_points: int = None,
+                 Augmentor: Augmentor = Augmentor(),
                  ):
 
         self.vols = vols
@@ -411,33 +447,63 @@ class SplitterTest():
         self.radius = radius
         self.context_slices = context_slices
         self.num_points = num_points
+        self.Augmentor = Augmentor
 
     def test_iter(self, vol, model, drop):
         res = {}
         drop_start, drop_end = drop
-        # do connected compnent for both top and bottom sections
-        vol_relabeled = np.zeros_like(vol)
         cs = self.context_slices
 
+        # build a new vol with slices dropped in the middle
+        # and do connected_components do relablel/detach neurites on
+        # either side of the volume
+        vol_relabeled = np.zeros_like(vol)
         vol_relabeled[drop_start-cs:drop_start] = vol[drop_start-cs:drop_start]
         vol_relabeled[drop_end:drop_end+cs] = vol[drop_end:drop_end+cs]
-
         vol_relabeled = cc3d.connected_components(vol_relabeled)
 
+        # create a map from the new lables to the original labels
+        # this allows us to figure out the ground truth for accuracy
         label_map = correspond_labels(vol_relabeled, vol)
 
+        # take the neurites on the top border of the missing slices
+        # and attempt to reattach
         top_border = vol_relabeled[drop_start-1]
         top_neurites = np.unique(top_border)
-
-        for c in top_neurites:
+        np.random.shuffle(top_neurites)
+        totals = {}
+        total_correct_merge = 0
+        count_true = 0
+        print(f'total neurites {len(top_neurites)}')
+        for step, c in enumerate(top_neurites):
             examples, labels = self.get_examples_from_top_class(
-                vol_relabeled, c, drop)
-            for x, l in zip(examples, labels):
-                y = label_map[l[0]] == label_map[l[1]]
-                y_hat = model(x)
-                pred = predict_class(y_hat)
+                vol_relabeled, c, drop, label_map)
 
-    def get_examples_from_top_class(self, vol, c, drop):
+            # examples, labels = balance_binary_batch(
+            #     examples, labels, shuffle=True)
+
+            with torch.no_grad():
+                y_hat = model(examples)
+                pred = predict_class(y_hat)
+                accs = get_accuracy(labels, pred)
+                any_true = torch.count_nonzero(labels) > 0
+
+                if any_true:
+                    count_true += 1
+                    most_true_i = torch.argmax(
+                        y_hat[:, 1]-y_hat[:, 0], dim=0)
+                    succ_most = labels[most_true_i] == 1
+
+                    total_correct_merge += int(succ_most)
+                    print(
+                        f'step {step}: acc {total_correct_merge/count_true:.2f}')
+                # combine accs
+                totals = {k: totals.get(k, 0) + accs.get(k, 0)
+                          for k in set(accs)}
+        print(totals)
+        print(count_true, len(top_neurites) - count_true)
+
+    def get_examples_from_top_class(self, vol, c, drop, label_map):
 
         top_c = c
         (sz, sy, sx) = vol.shape
@@ -486,9 +552,10 @@ class SplitterTest():
         mismatch_classes = list_remove(mismatch_classes, [0])
 
         final_vol[0: top_z_len] = top_vol_section
-        final_examples = []
+        final_examples = torch.zeros(
+            (len(mismatch_classes), 3, self.num_points))
         final_lables = []
-        for bot_c in mismatch_classes:
+        for i, bot_c in enumerate(mismatch_classes):
 
             cur_vol = final_vol.copy()
             # Build bot section #
@@ -499,10 +566,11 @@ class SplitterTest():
             cur_vol[num_slices+top_z_len:] = bot_vol_section
 
             pc = self.convert_volumetric_to_final(cur_vol)
-            final_examples.append(pc)
-            final_lables.append((top_c, bot_c))
+            final_examples[i] = pc
+            label = int(label_map[top_c] == label_map[bot_c])
+            final_lables.append(label)
 
-        return np.array(final_examples), final_lables
+        return final_examples, torch.tensor(final_lables)
 
     def remove_vol_interiors(self, vol):
 
@@ -541,13 +609,15 @@ class SplitterTest():
         assert len(
             all_classes) == 3, f'final sample should have 3 classes, [0, n1, n2] not {all_classes}'
 
-        grid_volume(color.label2rgb(vol_example, bg_label=0))
+        # grid_volume(color.label2rgb(vol_example, bg_label=0))
 
         # remove interiors
         vol_example = self.remove_vol_interiors(vol_example)
 
         # convert to point cloud
         pc_example = self.convert_to_point_cloud(vol_example)
+        if self.Augmentor is not None:
+            pc_example = self.Augmentor.transfrom(pc_example)
         pc_example = np.swapaxes(pc_example, 0, 1)
 
         pc_example = torch.from_numpy(pc_example).type(torch.float32)

@@ -1,4 +1,5 @@
 import numpy as np
+from numpy.core.records import array
 from .all import split_int
 
 
@@ -110,3 +111,13 @@ def random_sample_arr(arr, ratio=None, count=None, replace=False):
         amount = count
     r_ind = np.random.choice(len(arr), amount, replace=replace)
     return arr[r_ind]
+
+
+def equivariant_shuffle(*arrays):
+    array_lens = arrays[0].shape[0]
+    shuffler = np.random.permutation(array_lens)
+    res = []
+    for a in arrays:
+        res.append(a[shuffler])
+
+    return tuple(res)

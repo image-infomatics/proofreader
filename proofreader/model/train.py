@@ -248,9 +248,9 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                         x = x.cuda(rank, non_blocking=True)
                         y = y.cuda(rank, non_blocking=True)
 
-                        y_hat = model(x)
-                        # compute loss
-                        loss = loss_module(y_hat, y)
+                    y_hat = model(x)
+                    # compute loss
+                    loss = loss_module(y_hat, y)
 
                     # record metrics
                     cur_loss = loss.item()

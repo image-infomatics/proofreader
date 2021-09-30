@@ -20,7 +20,7 @@ def print_all_live_tensors():
     print('===========================TENSORS===========================')
     tensors = get_all_live_tensors()
     for t in tensors:
-        print(obj.dtype, obj.device, type(obj), obj.size())
+        print(t.dtype, t.device, type(t), t.size())
 
 
 def count_all_live_tensors():
@@ -83,9 +83,10 @@ def save_model(model, path, epoch=None, optimizer=None, loss=None):
     torch.save(state, fname)
 
 
-def load_model(model, path, optimizer=None,):
-    checkpoint = torch.load(path)
-    model.load_state_dict(checkpoint['model_state_dict'])
+def load_model(model, path, optimizer=None, map_location=None, strict=True):
+    checkpoint = torch.load(path, map_location=map_location)
+
+    model.load_state_dict(checkpoint['model_state_dict'], strict=strict)
     if optimizer is not None:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         return model, optimizer
