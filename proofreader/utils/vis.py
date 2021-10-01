@@ -6,10 +6,10 @@ import IPython
 import math
 
 
-def plot_3d(data, marker='.', lims=None, xlim=None, ylim=None, zlim=None):
+def plot_3d(data, title='', marker='.', lims=None, xlim=None, ylim=None, zlim=None):
     x, y, z = data[:, 0], data[:, 1], data[:, 2]
     fig = plt.figure(figsize=(8, 8))
-    ax = fig.add_subplot(111, projection='3d')
+    ax = fig.add_subplot(111, projection='3d', title=title)
 
     if lims is not None:
         xlim, ylim, zlim = lims

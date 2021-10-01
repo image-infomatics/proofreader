@@ -1,3 +1,4 @@
+from numpy.lib.function_base import append
 from proofreader.data.augment import Augmentor
 from typing import List, Tuple
 import numpy as np
@@ -54,6 +55,20 @@ def get_classes_with_at_least_volume(vol, min_volume):
         if cnt < min_volume:
             break
     return classes[:i]
+
+
+def zero_classes_with_min_volume(vol, min_volume, zero_val=0):
+    classes, counts = get_classes_sorted_by_volume(
+        vol, return_counts=True)
+    i = 0
+    for cnt in counts:
+        if cnt > min_volume:
+            break
+        i += 1
+    mask = np.isin(vol,  classes[:i])
+    new_vol = vol.copy()
+    new_vol[mask] = zero_val
+    return new_vol
 
 
 def convert_grid_to_pointcloud(vol, threshold=0, keep_features=False):
@@ -207,17 +222,15 @@ class SplitterDataset(torch.utils.data.Dataset):
         self.true_length = length*2
         self.effective_length = self.true_length * self.epoch_multplier
 
-    """
-    Gets a postive or negative example from vol using some class seed. Returns the volmertic representation of example.
-        c (int): label of a neurite in vol to use as source
-        example_type (bool): True for positive example, False for negative example
-        radius (int): radius (voxels) on bottom cross section in which to select second neurite
-        num_slices (int): number of slices to drop
-        context_slices (int): max number of slice on top and bottom neurites
-    """
-
     def get_volumetric_example(self, vol, c, label, num_slices, radius, context_slices):
-
+        """
+        Gets a postive or negative example from vol using some class seed. Returns the volmertic representation of example.
+            c (int): label of a neurite in vol to use as source
+            example_type (bool): True for positive example, False for negative example
+            radius (int): radius (voxels) on bottom cross section in which to select second neurite
+            num_slices (int): number of slices to drop
+            context_slices (int): max number of slice on top and bottom neurites
+        """
         margin = 1  # number of slices that must be left on top after droping slices
         top_c = c
         (sz, sy, sx) = vol.shape
@@ -432,7 +445,7 @@ class SplitterDataset(torch.utils.data.Dataset):
         return self.effective_length
 
 
-class SplitterTest():
+class SplitterTest(torch.utils.data.IterableDataset):
     def __init__(self,
                  vols: List,
                  num_slices: int,
@@ -440,68 +453,95 @@ class SplitterTest():
                  context_slices: int,
                  num_points: int = None,
                  Augmentor: Augmentor = Augmentor(),
+                 verbose: bool = False,
                  ):
 
-        self.vols = vols
+        # clean vols
+        self.vols = []
+        for vol in vols:
+            vol = zero_classes_with_min_volume(vol, 500)
+            self.vols.append(vol)
+
         self.num_slices = num_slices
         self.radius = radius
         self.context_slices = context_slices
         self.num_points = num_points
         self.Augmentor = Augmentor
+        self.verbose = verbose
 
-    def test_iter(self, vol, model, drop):
-        res = {}
-        drop_start, drop_end = drop
-        cs = self.context_slices
+        self.test_iteration_batch = None
+        self.test_iteration_i = 0
+        self.test_iteration_len = 0
 
-        # build a new vol with slices dropped in the middle
-        # and do connected_components do relablel/detach neurites on
-        # either side of the volume
-        vol_relabeled = np.zeros_like(vol)
-        vol_relabeled[drop_start-cs:drop_start] = vol[drop_start-cs:drop_start]
-        vol_relabeled[drop_end:drop_end+cs] = vol[drop_end:drop_end+cs]
-        vol_relabeled = cc3d.connected_components(vol_relabeled)
+        self.top_neurites = np.zeros((0))
+        self.cur_neurite_i = 0
+        self.vol_relabeled = None
+        self.label_map = None
 
-        # create a map from the new lables to the original labels
-        # this allows us to figure out the ground truth for accuracy
-        label_map = correspond_labels(vol_relabeled, vol)
+        self.cur_drop_start = context_slices-1
+        self.cur_vol_i = 0
 
-        # take the neurites on the top border of the missing slices
-        # and attempt to reattach
-        top_border = vol_relabeled[drop_start-1]
-        top_neurites = np.unique(top_border)
-        np.random.shuffle(top_neurites)
-        totals = {}
-        total_correct_merge = 0
-        count_true = 0
-        print(f'total neurites {len(top_neurites)}')
-        for step, c in enumerate(top_neurites):
-            examples, labels = self.get_examples_from_top_class(
-                vol_relabeled, c, drop, label_map)
+        self.no_match = 0
 
-            # examples, labels = balance_binary_batch(
-            #     examples, labels, shuffle=True)
+    def load_test_iteration(self):
 
-            with torch.no_grad():
-                y_hat = model(examples)
-                pred = predict_class(y_hat)
-                accs = get_accuracy(labels, pred)
-                any_true = torch.count_nonzero(labels) > 0
+        if self.cur_neurite_i >= self.top_neurites.shape[0]:
+            if self.verbose:
+                print('getting all top neurites for drop')
+            self.increment_vol_and_drop()
+            vol = self.get_cur_vol()
+            (drop_start, drop_end) = self.get_cur_drop()
 
-                if any_true:
-                    count_true += 1
-                    most_true_i = torch.argmax(
-                        y_hat[:, 1]-y_hat[:, 0], dim=0)
-                    succ_most = labels[most_true_i] == 1
+            cs = self.context_slices
 
-                    total_correct_merge += int(succ_most)
-                    print(
-                        f'step {step}: acc {total_correct_merge/count_true:.2f}')
-                # combine accs
-                totals = {k: totals.get(k, 0) + accs.get(k, 0)
-                          for k in set(accs)}
-        print(totals)
-        print(count_true, len(top_neurites) - count_true)
+            # build a new vol with slices dropped in the middle
+            # and do connected_components do relablel/detach neurites on
+            # either side of the volume
+            vol_relabeled = np.zeros_like(vol)
+            vol_relabeled[drop_start -
+                          cs:drop_start] = vol[drop_start-cs:drop_start]
+            vol_relabeled[drop_end:drop_end+cs] = vol[drop_end:drop_end+cs]
+
+            # remeber where the background is then reset in after cc
+            zero_indices = vol_relabeled == 0
+            vol_relabeled = cc3d.connected_components(vol_relabeled)
+            vol_relabeled[zero_indices] = 0
+
+            # create a map from the new lables to the original labels
+            # this allows us to figure out the ground truth for accuracy
+            label_map = correspond_labels(vol_relabeled, vol, bg_label=0)
+
+            # take the neurites on the top border of the missing slices
+            # and attempt to reattach
+            top_neurites = np.unique(vol_relabeled[drop_start-1])
+            top_neurites = np.delete(top_neurites, 0)
+            np.random.shuffle(top_neurites)
+            self.top_neurites = top_neurites
+            self.cur_neurite_i = 0
+            self.vol_relabeled = vol_relabeled
+            self.label_map = label_map
+
+        if self.verbose:
+            print('getting top neurite batch')
+
+        drop = self.get_cur_drop()
+        c = self.top_neurites[self.cur_neurite_i]
+
+        examples, labels = self.get_examples_from_top_class(
+            self.vol_relabeled, c, drop, self.label_map)
+
+        # sanity check
+        num_true = labels.count_nonzero()
+        if num_true == 0:
+            self.no_match += 1
+
+        examples, labels = equivariant_shuffle(
+            examples, labels)
+
+        self.cur_neurite_i += 1
+        self.test_iteration_batch = (examples, labels)
+        self.test_iteration_len = examples.shape[0]
+        self.test_iteration_i = 0
 
     def get_examples_from_top_class(self, vol, c, drop, label_map):
 
@@ -549,7 +589,7 @@ class SplitterTest():
         # Other wise select bottom class by picking 1 neurite from set of labels in radius #
         assert mismatch_classes[0] == 0, 'first class should be 0, otherwise something went wrong'
         # remove 0
-        mismatch_classes = list_remove(mismatch_classes, [0])
+        mismatch_classes = list_remove(mismatch_classes, 0)
 
         final_vol[0: top_z_len] = top_vol_section
         final_examples = torch.zeros(
@@ -624,5 +664,51 @@ class SplitterTest():
 
         return pc_example
 
-    def test_eval(self, model):
-        pass
+    def increment_vol_and_drop(self):
+        if self.verbose:
+            print('increment drop')
+        cur_vol = self.get_cur_vol()
+        self.cur_drop_start += 1
+        cur_drop_end = self.cur_drop_start + self.num_slices
+
+        # if we have reached the end of the vol, do to next vol
+        if cur_drop_end + self.context_slices > cur_vol.shape[0]:
+            self.cur_vol_i += 1
+            self.cur_drop_start = self.context_slices
+            if self.verbose:
+                print('increment vol')
+            if self.cur_vol_i >= len(self.vols):
+                raise StopIteration
+
+    def get_cur_vol(self):
+        return self.vols[self.cur_vol_i]
+
+    def get_cur_drop(self):
+        cur_drop_end = self.cur_drop_start + self.num_slices
+        return (self.cur_drop_start, cur_drop_end)
+
+    def get_next(self):
+
+        # if we have reached the end of the current batch load a new one
+        if self.test_iteration_i >= self.test_iteration_len:
+            if self.verbose:
+                print('finish single top neurite batch')
+            self.load_test_iteration()
+
+        # get the example from the batch in object state
+        (all_examples, all_lables) = self.test_iteration_batch
+
+        # print(index, self.cur_vol_i, self.test_iteration_i,
+        #       self.cur_neurite_i, self.get_cur_drop())
+
+        x, y = all_examples[self.test_iteration_i], all_lables[self.test_iteration_i]
+        self.test_iteration_i += 1
+
+        return x, y
+
+    def __iter__(self):
+        while True:
+            try:
+                yield self.get_next()
+            except StopIteration:
+                return
