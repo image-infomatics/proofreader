@@ -1,19 +1,25 @@
-from numpy.lib.function_base import append
+from torch.utils.data import DataLoader
+from proofreader.model.config import *
+from proofreader.data.cremi import prepare_cremi_vols
+import click
+
 from proofreader.data.augment import Augmentor
-from typing import List, Tuple
+from typing import List
 import numpy as np
 import torch
 import random
 import cc3d
-from proofreader.utils.all import list_remove, split_int
+from proofreader.utils.all import list_remove
 from proofreader.utils.vis import *
 from proofreader.utils.data import *
 from proofreader.data.augment import Augmentor
-from proofreader.model.classifier import predict_class, get_accuracy
+
 from skimage.segmentation import find_boundaries
 from scipy import ndimage
 from proofreader.utils.torch import *
-from skimage import color
+
+
+from tqdm import tqdm
 
 
 def get_classes_sorted_by_volume(vol, reverse=False, return_counts=False):
@@ -136,7 +142,7 @@ def balance_binary_batch(batch, labels, shuffle=False):
     return expanded_batch, expanded_lables
 
 
-class SplitterDataset(torch.utils.data.Dataset):
+class NeuriteDataset(torch.utils.data.Dataset):
     def __init__(self,
                  vols: List,
                  num_slices: int,
@@ -445,13 +451,14 @@ class SplitterDataset(torch.utils.data.Dataset):
         return self.effective_length
 
 
-class SplitterTest(torch.utils.data.IterableDataset):
+class SliceDataset(torch.utils.data.IterableDataset):
     def __init__(self,
                  vols: List,
                  num_slices: int,
                  radius: int,
                  context_slices: int,
                  num_points: int = None,
+                 add_batch_id: bool = False,
                  Augmentor: Augmentor = Augmentor(),
                  verbose: bool = False,
                  ):
@@ -468,6 +475,7 @@ class SplitterTest(torch.utils.data.IterableDataset):
         self.num_points = num_points
         self.Augmentor = Augmentor
         self.verbose = verbose
+        self.add_batch_id = add_batch_id
 
         self.test_iteration_batch = None
         self.test_iteration_i = 0
@@ -482,8 +490,9 @@ class SplitterTest(torch.utils.data.IterableDataset):
         self.cur_vol_i = 0
 
         self.no_match = 0
+        self.candidate_batch_num = 0
 
-    def load_test_iteration(self):
+    def load_next_candidate_batch(self):
 
         if self.cur_neurite_i >= self.top_neurites.shape[0]:
             if self.verbose:
@@ -538,7 +547,15 @@ class SplitterTest(torch.utils.data.IterableDataset):
         examples, labels = equivariant_shuffle(
             examples, labels)
 
+        if self.add_batch_id:
+            ids = torch.zeros_like(labels) + self.candidate_batch_num
+            print(labels.shape)
+            labels = torch.stack((labels, ids), dim=1)
+            print(labels.shape)
+            print('hi')
+
         self.cur_neurite_i += 1
+        self.candidate_batch_num += 1
         self.test_iteration_batch = (examples, labels)
         self.test_iteration_len = examples.shape[0]
         self.test_iteration_i = 0
@@ -693,7 +710,7 @@ class SplitterTest(torch.utils.data.IterableDataset):
         if self.test_iteration_i >= self.test_iteration_len:
             if self.verbose:
                 print('finish single top neurite batch')
-            self.load_test_iteration()
+            self.load_next_candidate_batch()
 
         # get the example from the batch in object state
         (all_examples, all_lables) = self.test_iteration_batch
@@ -712,3 +729,72 @@ class SplitterTest(torch.utils.data.IterableDataset):
                 yield self.get_next()
             except StopIteration:
                 return
+
+
+@click.command()
+@click.option('--config',
+              type=str,
+              help='the config to use'
+              )
+@click.option('--output-dir', '-o',
+              type=str, default='/mnt/home/jberman/ceph/pf/data',
+              help='for output'
+              )
+@click.option('--batch-size', '-b',
+              type=int, default=2048,
+              help='size of batch for generating dataset'
+              )
+@click.option('--num_workers', '-w',
+              type=int, default=-1,
+              help='num workers for pytorch dataloader. -1 means automatically set.'
+              )
+def generate_dataset(config: str, output_dir: str, batch_size: int, num_workers: int):
+    config = get_config(config)
+
+    train_vols, test_vols = prepare_cremi_vols('../../dataset/cremi')
+    config_name = config
+    config = get_config(config_name)
+
+    # auto set
+    if num_workers == -1:
+        num_workers = get_cpu_count()
+
+    # file management
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    version = 0
+    file_path = f'{output_dir}/{config.name}_dataset'
+    while os.path.exists(f'{file_path}_{version}'):
+        version += 1
+    file_path = f'{file_path}_{version}'
+
+    print(f'building {file_path}...')
+    for vols, name in zip([train_vols, test_vols], 'train', 'test'):
+        print(f'generating for {name}...')
+
+        dataset = build_dataset_from_config(
+            config.dataset, config.augmentor, vols)
+
+        dataloader = DataLoader(
+            dataset=dataset, batch_size=batch_size, num_workers=num_workers)
+
+        all_x, all_y = [], []
+        for step, batch in tqdm(enumerate(dataloader)):
+            x, y = batch
+            all_x.append(x)
+            all_y.append(y)
+            if step > 100:
+                break
+
+        print(f'concating batches...')
+        all_x = torch.cat(all_x)
+        all_y = torch.cat(all_y)
+
+        print(f'saving batches...')
+        torch.save([all_x, all_y], f'{file_path}_{name}')
+
+        print(f'finished {name}!')
+
+
+if __name__ == '__main__':
+    generate_dataset()

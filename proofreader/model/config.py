@@ -1,13 +1,14 @@
 import math
 import pprint
 from dataclasses import dataclass
+from torch.utils import data
 
 from torch.utils.data import Subset
 
 import torch
 import torch.nn.functional as F
 
-from proofreader.data.splitter import SplitterDataset
+from proofreader.data.splitter import NeuriteDataset, SliceDataset
 from proofreader.data.augment import Augmentor
 from proofreader.model.pointnet import PointNet
 from proofreader.model.curvenet import CurveNet
@@ -15,8 +16,8 @@ from proofreader.model.curvenet import CurveNet
 
 @dataclass
 class AugmentorConfig:
-    shuffle: bool = False
-    center: bool = False
+    shuffle: bool = True
+    center: bool = True
     rotate: bool = False
     scale: bool = False
     jitter: bool = False
@@ -26,22 +27,21 @@ class AugmentorConfig:
 @dataclass
 class DatasetConfig:
     dataset: str = 'cremi'
+    dataset_type: str = 'slice'
     num_classes: int = 2
-    num_slices = [1, 4]
+    num_slices = 4
     radius: int = 96
-    context_slices: int = 6
+    context_slices: int = 3
     num_points: int = 1024
     val_split: float = 0.15
-    epoch_multplier: int = 1
     verbose: bool = False
 
 
 @dataclass
 class ModelConfig:
-    model: str = 'pointnet'
-    loss: str = 'nll'
+    model: str = 'curvenet'
+    loss: str = 'ce'
     optimizer: str = 'AdamW'
-    dim: int = 256
     learning_rate: float = 1e-3
 
 
@@ -64,11 +64,17 @@ def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: Augment
     augmentor = Augmentor(center=aug_config.center, shuffle=aug_config.shuffle,
                           rotate=aug_config.rotate, scale=aug_config.scale,
                           jitter=aug_config.jitter, normalize=aug_config.normalize)
-
     # build dataset
-    dataset = SplitterDataset(
-        vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices,
-        num_points=dataset_config.num_points, Augmentor=augmentor, open_vol=True, epoch_multplier=dataset_config.epoch_multplier,  verbose=dataset_config.verbose, shuffle=True, torch=True)
+    if dataset_config.dataset_type == 'neurite':
+        dataset = NeuriteDataset(
+            vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices,
+            num_points=dataset_config.num_points, Augmentor=augmentor, open_vol=True,  verbose=dataset_config.verbose, shuffle=True, torch=True)
+    elif dataset_config.dataset_type == 'slice':
+        dataset = SliceDataset(vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices,
+                               num_points=dataset_config.num_point, Augmentor=augmentor, add_batch_id=True, verbose=False)
+        return dataset
+    elif dataset_config.dataset_type == 'pregenerated':
+        pass
 
     # split into train and val
     split = math.floor(len(dataset)*dataset_config.val_split)
@@ -110,25 +116,5 @@ def get_config(name):
 
 
 CONFIGS = [
-    ExperimentConfig('pointnet'),
-    ExperimentConfig('curvenet', model=ModelConfig(
-        model='curvenet', loss='ce')),
-    ExperimentConfig('pn_context_2', dataset=DatasetConfig(context_slices=2)),
-    ExperimentConfig('pn_context_1', dataset=DatasetConfig(context_slices=1)),
-    ExperimentConfig('pn_context_8', dataset=DatasetConfig(context_slices=8)),
-    ExperimentConfig('cn_context_2', model=ModelConfig(
-        model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=2)),
-    ExperimentConfig('cn_context_1', model=ModelConfig(
-        model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=1)),
-    ExperimentConfig('cn_context_4', model=ModelConfig(
-        model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=4)),
-    ExperimentConfig('cn_context_4_aug', model=ModelConfig(
-        model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=4),
-        augmentor=AugmentorConfig(shuffle=True, center=True, rotate=True, scale=True)),
-    ExperimentConfig('cn_context_4_aug_small', model=ModelConfig(
-        model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=4),
-        augmentor=AugmentorConfig(shuffle=True, center=True)),
-    ExperimentConfig('cn_context_4_aug_mid', model=ModelConfig(
-        model='curvenet', loss='ce'), dataset=DatasetConfig(context_slices=4),
-        augmentor=AugmentorConfig(shuffle=True, center=True, scale=True)),
+    ExperimentConfig('curvenet'),
 ]
