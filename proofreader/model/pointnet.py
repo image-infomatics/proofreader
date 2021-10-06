@@ -89,22 +89,25 @@ class PointNet(nn.Module):
         self.bn1 = nn.BatchNorm1d(512)
         self.bn2 = nn.BatchNorm1d(256)
         self.relu = nn.ReLU()
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         x, trans = self.feat(x)
         x = F.relu(self.bn1(self.fc1(x)))
         x = F.relu(self.bn2(self.fc2(x)))
         x = self.fc3(x)
-        return F.log_softmax(x, dim=-1)
+        x = self.sigmoid(x)
+        return x.squeeze()
 
 
 if __name__ == '__main__':
-    torch.manual_seed(0)
+    torch.manual_seed(7)
     num_points = 1024
-    batch_size = 4
+    batch_size = 10
     num_feature = 3
+    classes = 1
     print(
-        f'num_points {num_points}, batch_size {batch_size}, num_feature {num_feature}')
+        f'num_points {num_points}, batch_size {batch_size}, num_feature {num_feature} classes {classes}')
 
     sim_data = torch.rand(batch_size, num_feature, num_points)
 
@@ -121,13 +124,12 @@ if __name__ == '__main__':
     out, _ = pointfeat(sim_data)
     print('point feat', out.size())
 
-    cls = PointNet(num_points=num_points, classes=5)
-    out = cls(sim_data)
-    print('class', out.size())
-    print('out range', torch.min(out), torch.max(out))
+    cls = PointNet(num_points=num_points, classes=classes)
+    y_hat = cls(sim_data)
+    print('class', y_hat.size())
+    print(y_hat)
+    threshold = 0.5
 
-    pred_logsoft = out.detach().numpy().squeeze()
-    pred_soft = np.exp(pred_logsoft)
-    pred_class = np.argmax(pred_soft, axis=1)
+    pred_class = (y_hat > threshold).int()
 
     print('pred_class', pred_class)

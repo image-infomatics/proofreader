@@ -497,7 +497,11 @@ class SliceDataset(torch.utils.data.IterableDataset):
         if self.cur_neurite_i >= self.top_neurites.shape[0]:
             if self.verbose:
                 print('getting all top neurites for drop')
-            self.increment_vol_and_drop()
+
+            # only increment if its not the init
+            if self.top_neurites.shape[0] > 0:
+                self.increment_vol_and_drop()
+
             vol = self.get_cur_vol()
             (drop_start, drop_end) = self.get_cur_drop()
 
@@ -549,10 +553,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
 
         if self.add_batch_id:
             ids = torch.zeros_like(labels) + self.candidate_batch_num
-            print(labels.shape)
             labels = torch.stack((labels, ids), dim=1)
-            print(labels.shape)
-            print('hi')
 
         self.cur_neurite_i += 1
         self.candidate_batch_num += 1
@@ -681,17 +682,27 @@ class SliceDataset(torch.utils.data.IterableDataset):
 
         return pc_example
 
+    def get_drop_start_range(self):
+        # point at each drop end cannot exceede
+        cur_vol = self.get_cur_vol()
+        range_start = self.context_slices
+        range_stop = cur_vol.shape[0] - self.num_slices - self.context_slices
+        # for worker parallelization set drop_end_max by drop_start_worker_range
+        if self.drop_start_worker_range is not None:
+            range_start, range_stop = self.drop_start_worker_range
+
+        return (range_start, range_stop)
+
     def increment_vol_and_drop(self):
         if self.verbose:
             print('increment drop')
-        cur_vol = self.get_cur_vol()
         self.cur_drop_start += 1
-        cur_drop_end = self.cur_drop_start + self.num_slices
+        range_start, range_stop = self.get_drop_start_range()
 
         # if we have reached the end of the vol, do to next vol
-        if cur_drop_end + self.context_slices > cur_vol.shape[0]:
+        if self.cur_drop_start >= range_stop:
             self.cur_vol_i += 1
-            self.cur_drop_start = self.context_slices
+            self.cur_drop_start = range_start
             if self.verbose:
                 print('increment vol')
             if self.cur_vol_i >= len(self.vols):
@@ -715,20 +726,52 @@ class SliceDataset(torch.utils.data.IterableDataset):
         # get the example from the batch in object state
         (all_examples, all_lables) = self.test_iteration_batch
 
-        # print(index, self.cur_vol_i, self.test_iteration_i,
-        #       self.cur_neurite_i, self.get_cur_drop())
+        if self.verbose:
+            print(
+                f'vol: {self.cur_vol_i}, drop: {self.get_cur_drop()}, neurite: {self.cur_neurite_i}, candidate: {self.test_iteration_i}')
 
         x, y = all_examples[self.test_iteration_i], all_lables[self.test_iteration_i]
         self.test_iteration_i += 1
 
         return x, y
 
-    def __iter__(self):
+    def build_generator(self, drop_start_worker_range=None):
+        # for worker parallelization
+        if self.verbose:
+            worker_info = torch.utils.data.get_worker_info()
+            print(
+                f'worker_id: {worker_info.id}, drop_start_worker_range: {drop_start_worker_range}')
+        self.drop_start_worker_range = drop_start_worker_range
+        if self.drop_start_worker_range is not None:
+            range_start, _ = self.drop_start_worker_range
+            self.cur_drop_start = range_start
+        # generator
         while True:
             try:
                 yield self.get_next()
             except StopIteration:
                 return
+
+    def __iter__(self):
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:  # single-process data loading, return the full iterator
+            self.build_generator()
+        else:  # in a worker process
+            vol = self.get_cur_vol()  # assumes vols all same shape
+            start, end = self.context_slices, vol.shape[0] - \
+                self.num_slices - self.context_slices
+            # split workload
+            per_worker = int(
+                math.ceil((end - start) / float(worker_info.num_workers)))
+            worker_id = worker_info.id
+            iter_start = start + worker_id * per_worker
+            iter_end = min(iter_start + per_worker, end)
+            drop_start_worker_range = (iter_start, iter_end)
+            if iter_start >= iter_end:
+                print(
+                    f'too many workers, not using worker {worker_id}')
+                return iter(())
+        return self.build_generator(drop_start_worker_range=drop_start_worker_range)
 
 
 @click.command()
@@ -737,11 +780,11 @@ class SliceDataset(torch.utils.data.IterableDataset):
               help='the config to use'
               )
 @click.option('--output-dir', '-o',
-              type=str, default='/mnt/home/jberman/ceph/pf/data',
+              type=str, default='/mnt/home/jberman/ceph/pf/dataset',
               help='for output'
               )
 @click.option('--batch-size', '-b',
-              type=int, default=2048,
+              type=int, default=512,
               help='size of batch for generating dataset'
               )
 @click.option('--num_workers', '-w',
@@ -749,11 +792,8 @@ class SliceDataset(torch.utils.data.IterableDataset):
               help='num workers for pytorch dataloader. -1 means automatically set.'
               )
 def generate_dataset(config: str, output_dir: str, batch_size: int, num_workers: int):
-    config = get_config(config)
 
-    train_vols, test_vols = prepare_cremi_vols('../../dataset/cremi')
-    config_name = config
-    config = get_config(config_name)
+    config = get_config(config)
 
     # auto set
     if num_workers == -1:
@@ -767,10 +807,15 @@ def generate_dataset(config: str, output_dir: str, batch_size: int, num_workers:
     while os.path.exists(f'{file_path}_{version}'):
         version += 1
     file_path = f'{file_path}_{version}'
+    print(
+        f'name {config.name}, batch_size {batch_size}, num_workers {num_workers}')
+    print(f'file_path {file_path}...')
 
-    print(f'building {file_path}...')
-    for vols, name in zip([train_vols, test_vols], 'train', 'test'):
-        print(f'generating for {name}...')
+    print(f'loading volumes...')
+    train_vols, test_vols = prepare_cremi_vols('./dataset/cremi')
+
+    for vols, name in zip([train_vols, test_vols], ['train', 'test']):
+        print(f'generating data for {name} set...')
 
         dataset = build_dataset_from_config(
             config.dataset, config.augmentor, vols)
@@ -783,15 +828,14 @@ def generate_dataset(config: str, output_dir: str, batch_size: int, num_workers:
             x, y = batch
             all_x.append(x)
             all_y.append(y)
-            if step > 100:
-                break
 
         print(f'concating batches...')
         all_x = torch.cat(all_x)
         all_y = torch.cat(all_y)
+        print(f'x: {all_x.shape} y: {all_y.shape}')
 
         print(f'saving batches...')
-        torch.save([all_x, all_y], f'{file_path}_{name}')
+        torch.save((all_x, all_y), f'{file_path}_{name}.pt')
 
         print(f'finished {name}!')
 

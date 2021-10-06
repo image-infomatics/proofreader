@@ -7,11 +7,13 @@ from torch.utils.data import Subset
 
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 
 from proofreader.data.splitter import NeuriteDataset, SliceDataset
 from proofreader.data.augment import Augmentor
 from proofreader.model.pointnet import PointNet
 from proofreader.model.curvenet import CurveNet
+from proofreader.utils.data import equivariant_shuffle
 
 
 @dataclass
@@ -26,15 +28,14 @@ class AugmentorConfig:
 
 @dataclass
 class DatasetConfig:
-    dataset: str = 'cremi'
-    dataset_type: str = 'slice'
-    num_classes: int = 2
+    dataset: str = 'slice'
     num_slices = 4
     radius: int = 96
     context_slices: int = 3
     num_points: int = 1024
     val_split: float = 0.15
     verbose: bool = False
+    add_batch_id: bool = True
 
 
 @dataclass
@@ -43,6 +44,7 @@ class ModelConfig:
     loss: str = 'ce'
     optimizer: str = 'AdamW'
     learning_rate: float = 1e-3
+    num_classes: int = 2
 
 
 @dataclass
@@ -65,16 +67,18 @@ def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: Augment
                           rotate=aug_config.rotate, scale=aug_config.scale,
                           jitter=aug_config.jitter, normalize=aug_config.normalize)
     # build dataset
-    if dataset_config.dataset_type == 'neurite':
+    if dataset_config.dataset == 'neurite':
         dataset = NeuriteDataset(
             vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices,
             num_points=dataset_config.num_points, Augmentor=augmentor, open_vol=True,  verbose=dataset_config.verbose, shuffle=True, torch=True)
-    elif dataset_config.dataset_type == 'slice':
+    elif dataset_config.dataset == 'slice':
         dataset = SliceDataset(vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices,
-                               num_points=dataset_config.num_point, Augmentor=augmentor, add_batch_id=True, verbose=False)
+                               num_points=dataset_config.num_points, Augmentor=augmentor, add_batch_id=dataset_config.add_batch_id, verbose=False)
         return dataset
-    elif dataset_config.dataset_type == 'pregenerated':
-        pass
+    else:  # assume its a path
+        x, y = torch.load(dataset_config.dataset)
+        x, y = equivariant_shuffle(x, y)
+        dataset = SimpleDataset(x, y)
 
     # split into train and val
     split = math.floor(len(dataset)*dataset_config.val_split)
@@ -87,16 +91,29 @@ def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: Augment
     return ds_train, ds_val
 
 
+class SimpleDataset(torch.utils.data.Dataset):
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+    def __getitem__(self, i):
+        return self.x[i], self.y[i]
+
+    def __len__(self):
+        return self.x.shape[0]
+
+
 def build_full_model_from_config(model_config: ModelConfig, dataset_config: DatasetConfig):
     # loss
     if model_config.loss == 'nll':
         loss = F.nll_loss
     elif model_config.loss == 'ce':
-        loss = F.cross_entropy
+        loss = nn.BCELoss()
 
     # optimizer
     if model_config.model == 'pointnet':
-        model = PointNet(num_points=dataset_config.num_points)
+        model = PointNet(num_points=dataset_config.num_points,
+                         classes=model_config.num_classes)
     elif model_config.model == 'curvenet':
         model = CurveNet()
 
@@ -117,4 +134,10 @@ def get_config(name):
 
 CONFIGS = [
     ExperimentConfig('curvenet'),
+    ExperimentConfig('curvenet-pre', dataset=DatasetConfig(
+        dataset='/mnt/home/jberman/ceph/pf/dataset/curvenet_dataset_0_train.pt')),
+    ExperimentConfig('pointnet-pre', model=ModelConfig(model='pointnet', learning_rate=1e-4), dataset=DatasetConfig(
+        dataset='/mnt/home/jberman/ceph/pf/dataset/curvenet_dataset_0_train.pt')),
+    ExperimentConfig('pointnet-pre-k1', model=ModelConfig(model='pointnet', learning_rate=1e-3, num_classes=1), dataset=DatasetConfig(
+        dataset='/mnt/home/jberman/ceph/pf/dataset/curvenet_dataset_0_train.pt')),
 ]

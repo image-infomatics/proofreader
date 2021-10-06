@@ -50,10 +50,10 @@ import random
               help='num workers for pytorch dataloader. -1 means automatically set.'
               )
 @click.option('--training-interval', '-t',
-              type=int, default=200, help='training interval in terms of examples seen to record data points.'
+              type=int, default=40, help='training interval in terms of batches.'
               )
 @click.option('--validation-interval', '-v',
-              type=int, default=10, help='validation interval in terms of epochs to record validation data.'
+              type=int, default=1, help='validation interval in terms of epochs to record validation data.'
               )
 @click.option('--test-interval', '-ti',
               type=int, default=500, help='interval when to run full test.'
@@ -153,9 +153,9 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
             model = DistributedDataParallel(
                 model, device_ids=[rank])
             train_sampler = DistributedSampler(
-                train_dataset, world_size, rank, seed=seed)
+                train_dataset, world_size, rank, seed=seed, shuffle=True)
             val_sampler = DistributedSampler(
-                val_datset, world_size, rank, seed=seed)
+                val_datset, world_size, rank, seed=seed, shuffle=True)
         # gpu with DataParallel
         else:
             model = model.cuda()
@@ -164,10 +164,10 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
         pin_memory = True
 
     val_workers = 4
-    train_dataloader = MultiEpochsDataLoader(dataset=train_dataset, batch_size=batch_size,
-                                             num_workers=num_workers, pin_memory=pin_memory, sampler=train_sampler, drop_last=True, persistent_workers=True)
-    val_dataloader = MultiEpochsDataLoader(dataset=val_datset, batch_size=batch_size,
-                                           num_workers=val_workers, pin_memory=pin_memory, sampler=val_sampler, drop_last=True)
+    train_dataloader = DataLoader(dataset=train_dataset, batch_size=batch_size,
+                                  num_workers=num_workers-val_workers, pin_memory=pin_memory, sampler=train_sampler, drop_last=True, shuffle=(train_sampler is None))
+    val_dataloader = DataLoader(dataset=val_datset, batch_size=batch_size,
+                                num_workers=val_workers, pin_memory=pin_memory, sampler=val_sampler, drop_last=True, shuffle=(train_sampler is None))
 
     if rank == 0:
         print("starting...")
@@ -179,18 +179,24 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
             pbar.refresh()
             pbar.reset()
             pbar.set_description(f'Epoch {epoch}')
+        if ddp:
+            train_sampler.set_epoch(epoch)
+            val_sampler.set_epoch(epoch)
 
         steps_since_training_interval = 0
         accumulated_loss = 0.0
-        accumulated_acc = 0.0
+        all_acc = {}
+        batch_acc = {}
         # TRAIN EPOCH
         for step, batch in enumerate(train_dataloader):
             example_number += batch_size
             steps_since_training_interval += 1
             # get batch
             x, y = batch
-
-            optimizer.zero_grad(set_to_none=True)
+            y = y.to(torch.float32)
+            if config.dataset.add_batch_id:
+                bid = y[:, 1]
+                y = y[:, 0]
 
             if use_gpu:
                 x = x.cuda(rank, non_blocking=True)
@@ -205,36 +211,34 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
             loss.backward()
             optimizer.step()
 
-            # record metrics
-            cur_loss = loss.item()
-            accumulated_loss += cur_loss
-            pred = predict_class(y_hat)
-            accs = get_accuracy(y, pred)
-            accumulated_acc += accs['total_acc']
-
-            # record progress
+            # record progress / metrics
             if rank == 0:
+                cur_loss = loss.item()
+                accumulated_loss += cur_loss
+                pred = predict_class_sigmoid(y_hat)
+                accs = get_accuracy(y, pred)
+                all_acc = {k: accs.get(k, 0) + all_acc.get(k, 0)
+                           for k in set(accs)}
                 pbar.set_postfix({'cur_loss': round(cur_loss, 3)})
-                pbar.update(1 * world_size)
-                if example_number % training_interval == 0:
-
+                pbar.update(1)
+                if steps_since_training_interval == training_interval:
                     per_example_loss = round(
-                        accumulated_loss / steps_since_training_interval, 3)
-                    per_example_acc = round(
-                        accumulated_acc / steps_since_training_interval, 3)
-
+                        accumulated_loss / training_interval, 3)
                     t_writer.add_scalar(
                         'Loss', per_example_loss, example_number)
-                    t_writer.add_scalar(
-                        'Accuracy', per_example_acc, example_number)
+                    for k, v in all_acc.items():
+                        t_writer.add_scalar(
+                            k, round(v / training_interval, 3), example_number)
+
                     accumulated_loss = 0.0
-                    accumulated_acc = 0.0
+                    all_acc = {}
                     steps_since_training_interval = 0
 
         # VAL STEP
         if validation_interval != 0 and epoch % validation_interval == 0:
             accumulated_loss = 0.0
-            accumulated_acc = 0.0
+            all_acc = {}
+            batch_acc = {}
             if rank == 0:
                 pbar.refresh()
                 pbar.reset()
@@ -243,6 +247,10 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                 for step, batch in enumerate(val_dataloader):
                     # get batch
                     x, y = batch
+                    y = y.to(torch.float32)
+                    if config.dataset.add_batch_id:
+                        bid = y[:, 1]
+                        y = y[:, 0]
 
                     if use_gpu:
                         x = x.cuda(rank, non_blocking=True)
@@ -252,27 +260,22 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                     # compute loss
                     loss = loss_module(y_hat, y)
 
-                    # record metrics
-                    cur_loss = loss.item()
-                    accumulated_loss += cur_loss
-                    pred = predict_class(y_hat)
-                    accs = get_accuracy(y, pred)
-                    accumulated_acc += accs['total_acc']
-                    if rank == 0:
-                        pbar.update(1 * world_size)
-
-            # record validation
+            # record validation metrics
             if rank == 0:
-                per_example_loss = round(
-                    accumulated_loss / len(val_dataloader), 3)
-                per_example_acc = round(
-                    accumulated_acc / len(val_dataloader), 3)
+                pbar.update(1)
+                cur_loss = loss.item()
+                accumulated_loss += cur_loss
+                pred = predict_class_sigmoid(y_hat)
+                accs = get_accuracy(y, pred)
 
-                v_writer.add_scalar(
-                    'Loss', per_example_loss, example_number)
-                v_writer.add_scalar(
-                    'Accuracy', per_example_acc, example_number)
+                all_acc = {k: accs.get(k, 0) + all_acc.get(k, 0)
+                           for k in set(accs)}
 
+                v_writer.add_scalar('Loss', round(
+                    accumulated_loss / len(val_dataloader), 3), example_number)
+                for k, v in all_acc.items():
+                    v_writer.add_scalar(
+                        k, round(v / len(val_dataloader), 3), example_number)
                 save_model(model, output_dir, epoch=epoch, optimizer=optimizer)
 
         # VAL STEP
