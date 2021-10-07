@@ -35,7 +35,7 @@ class DatasetConfig:
     num_points: int = 1024
     val_split: float = 0.15
     verbose: bool = False
-    add_batch_id: bool = True
+    add_batch_id: bool = False
 
 
 @dataclass
@@ -134,6 +134,8 @@ def get_config(name):
 
 CONFIGS = [
     ExperimentConfig('curvenet'),
+    ExperimentConfig('cn_context_4_aug_small',
+                     model=ModelConfig(model='curvenet')),
     ExperimentConfig('curvenet-pre', dataset=DatasetConfig(
         dataset='/mnt/home/jberman/ceph/pf/dataset/curvenet_dataset_0_train.pt')),
     ExperimentConfig('pointnet-pre', model=ModelConfig(model='pointnet', learning_rate=1e-4), dataset=DatasetConfig(

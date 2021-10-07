@@ -1,6 +1,6 @@
+from scipy.ndimage.morphology import distance_transform_edt
 import numpy as np
-from numpy.core.records import array
-from .all import split_int
+import math
 
 
 def pad_2_divisible_by(vol, factor):
@@ -121,3 +121,169 @@ def equivariant_shuffle(*arrays):
         res.append(a[shuffler])
 
     return tuple(res)
+
+
+def get_classes_sorted_by_volume(vol, reverse=False, return_counts=False):
+
+    classes, counts = np.unique(vol, return_counts=True)
+
+    sort_indices = np.argsort(counts)
+    if reverse:
+        sort_indices = np.flip(sort_indices)
+    classes = classes[sort_indices]
+    if return_counts:
+        counts = counts[sort_indices]
+        return classes, counts
+    return classes
+
+
+def get_classes_which_zspan_at_least(vol, span):
+    counts = {}
+    for i in range(vol.shape[0]):
+        slice = vol[i]
+        classes = np.unique(slice)
+        for c in classes:
+            if c in counts:
+                counts[c] += 1
+            else:
+                counts[c] = 0
+    res = []
+    for c, cnt in counts.items():
+        if cnt >= span:
+            res.append(c)
+
+    return res
+
+
+def get_classes_with_at_least_volume(vol, min_volume):
+    classes, counts = get_classes_sorted_by_volume(
+        vol, return_counts=True, reverse=True)
+    for i, cnt in enumerate(counts):
+        if cnt < min_volume:
+            break
+    return classes[:i]
+
+
+def zero_classes_with_min_volume(vol, min_volume, zero_val=0):
+    classes, counts = get_classes_sorted_by_volume(
+        vol, return_counts=True)
+    i = 0
+    for cnt in counts:
+        if cnt > min_volume:
+            break
+        i += 1
+    mask = np.isin(vol,  classes[:i])
+    new_vol = vol.copy()
+    new_vol[mask] = zero_val
+    return new_vol
+
+
+def convert_grid_to_pointcloud(vol, threshold=0, keep_features=False):
+    (sz, sy, sx) = vol.shape
+
+    # generate all coords in img
+    cords = np.mgrid[0:sz, 0:sy, 0:sx]
+    if keep_features:
+        cords = np.append([vol], cords, axis=0)
+    # select cords where above threshold
+    cords = cords[:, vol > threshold]
+
+    cords = np.swapaxes(cords, 0, 1)
+
+    return cords.astype(np.float32)
+
+
+def correspond_labels(key, val, bg_label=0):
+    res = {}
+    classes = np.unique(key)
+    for c in classes:
+        if c != bg_label:
+            corr = np.unique(val[key == c])
+            if len(corr) > 1:
+                print('warn, multiple correspondance')
+            res[c] = corr[-1]
+    return res
+
+
+def get_classes_sorted_by_distance(vol, distance_class, return_distances=False, reverse=False, ignore_zero=True, method='min'):
+
+    methods = ['min', 'mean', 'max']
+    assert method in methods, f'method should be one of {methods}'
+
+    # set zero to some new label
+    new_bg_label = np.max(vol) + 1
+    vol[vol == 0] = new_bg_label
+    # set object which we want to compute disantce from to zero
+    vol[vol == distance_class] = 0
+    distance_vol = distance_transform_edt(vol)
+    classes = np.unique(vol)
+
+    # redo vol so its not altered
+    vol[vol == 0] = distance_class
+    vol[vol == new_bg_label] = 0
+
+    if ignore_zero:
+        # zero is new_bg_label so this removes zero
+        classes = list_remove(classes, new_bg_label)
+
+    # distance_class is zero so this removes distance_class
+    classes = list_remove(classes, 0)
+
+    canidates = np.zeros(len(classes), dtype='uint')
+    distances = np.zeros(len(classes))
+    for i, c in enumerate(classes):
+        if method == 'min':
+            d = np.min(distance_vol[vol == c])
+        elif method == 'mean':
+            d = np.mean(distance_vol[vol == c])
+        elif method == 'max':
+            d = np.max(distance_vol[vol == c])
+        canidates[i] = c
+        distances[i] = d
+
+    sort_indices = np.argsort(distances)
+    if reverse:
+        sort_indices = np.flip(sort_indices)
+
+    # sort by distance
+    if return_distances:
+        return canidates[sort_indices], distances[sort_indices]
+    else:
+        return canidates[sort_indices]
+
+
+def readable_bytes(nbytes):
+    suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+    i = 0
+    while nbytes >= 1024 and i < len(suffixes)-1:
+        nbytes /= 1024.
+        i += 1
+    f = ('%.2f' % nbytes).rstrip('0').rstrip('.')
+    return '%s %s' % (f, suffixes[i])
+
+
+def split_int(i, bias='left'):
+    f = i/2
+    big = math.ceil(f)
+    sm = math.floor(f)
+    if bias == 'left':
+        return (big, sm)
+    elif bias == 'right':
+        return (sm, big)
+
+
+def list_remove(arr, rm):
+    if not isinstance(rm, list):
+        rm = [rm]
+    return [x for x in arr if not x in rm]
+
+
+def clamp(n, minn, maxn):
+    return max(min(maxn, n), minn)
+
+
+class dotdict(dict):
+    """dot.notation access to dictionary attributes"""
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__

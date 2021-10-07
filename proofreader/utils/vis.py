@@ -109,6 +109,11 @@ def grid_volume(vol, sz=20):
     plt.show()
 
 
+def grid_segmentation(seg, sz=20, alpha=1, bg_label=0):
+    colored = color.label2rgb(seg, alpha=alpha, bg_label=bg_label)
+    grid_volume(colored, sz=sz)
+
+
 def make_histogram(data, bins=20, title='', xlabel='', ylabel='Counts', logscale=False):
 
     bins = np.linspace(math.ceil(min(data)),

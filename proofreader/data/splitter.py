@@ -22,124 +22,42 @@ from proofreader.utils.torch import *
 from tqdm import tqdm
 
 
-def get_classes_sorted_by_volume(vol, reverse=False, return_counts=False):
+# def balance_binary_batch(batch, labels, shuffle=False):
+#     """
+#     Takes a batch of examples and labels of [0,1] and copies randomly samples
+#     copies of which ever class is under represented until there is equal
+#     representation of each class .
+#     """
 
-    classes, counts = np.unique(vol, return_counts=True)
+#     half = len(labels) // 2
+#     num_1 = torch.count_nonzero(labels).squeeze()
+#     num_0 = len(labels) - num_1
+#     if num_0 == 0 or num_1 == 0:
+#         return batch, labels
+#     elif num_1 < half:
+#         rebalance_label = 1
+#         num = num_1
+#     elif num_0 < half:
+#         rebalance_label = 0
+#         num = num_0
+#     else:
+#         return batch, labels
 
-    sort_indices = np.argsort(counts)
-    if reverse:
-        sort_indices = np.flip(sort_indices)
-    classes = classes[sort_indices]
-    if return_counts:
-        counts = counts[sort_indices]
-        return classes, counts
-    return classes
+#     add_amt = int(half - num)
+#     trues_indices = (labels == 1).nonzero().view(-1)
+#     new_trues_indices = random_sample_arr(
+#         trues_indices, count=add_amt, replace=True)
 
+#     new_labels = (torch.zeros((add_amt)) + rebalance_label)
 
-def get_classes_which_zspan_at_least(vol, span):
-    counts = {}
-    for i in range(vol.shape[0]):
-        slice = vol[i]
-        classes = np.unique(slice)
-        for c in classes:
-            if c in counts:
-                counts[c] += 1
-            else:
-                counts[c] = 0
-    res = []
-    for c, cnt in counts.items():
-        if cnt >= span:
-            res.append(c)
+#     expanded_batch = torch.cat((batch, batch[new_trues_indices]))
+#     expanded_lables = torch.cat((labels, new_labels))
 
-    return res
+#     if shuffle:
+#         expanded_batch, expanded_lables = equivariant_shuffle(
+#             expanded_batch, expanded_lables)
 
-
-def get_classes_with_at_least_volume(vol, min_volume):
-    classes, counts = get_classes_sorted_by_volume(
-        vol, return_counts=True, reverse=True)
-    for i, cnt in enumerate(counts):
-        if cnt < min_volume:
-            break
-    return classes[:i]
-
-
-def zero_classes_with_min_volume(vol, min_volume, zero_val=0):
-    classes, counts = get_classes_sorted_by_volume(
-        vol, return_counts=True)
-    i = 0
-    for cnt in counts:
-        if cnt > min_volume:
-            break
-        i += 1
-    mask = np.isin(vol,  classes[:i])
-    new_vol = vol.copy()
-    new_vol[mask] = zero_val
-    return new_vol
-
-
-def convert_grid_to_pointcloud(vol, threshold=0, keep_features=False):
-    (sz, sy, sx) = vol.shape
-
-    # generate all coords in img
-    cords = np.mgrid[0:sz, 0:sy, 0:sx]
-    if keep_features:
-        cords = np.append([vol], cords, axis=0)
-    # select cords where above threshold
-    cords = cords[:, vol > threshold]
-
-    cords = np.swapaxes(cords, 0, 1)
-
-    return cords.astype(np.float32)
-
-
-def correspond_labels(key, val, bg_label=0):
-    res = {}
-    classes = np.unique(key)
-    for c in classes:
-        if c != bg_label:
-            corr = np.unique(val[key == c])
-            if len(corr) > 1:
-                print('warn, multiple correspondance')
-            res[c] = corr[-1]
-    return res
-
-
-def balance_binary_batch(batch, labels, shuffle=False):
-    """
-    Takes a batch of examples and labels of [0,1] and copies randomly samples
-    copies of which ever class is under represented until there is equal
-    representation of each class .
-    """
-
-    half = len(labels) // 2
-    num_1 = torch.count_nonzero(labels).squeeze()
-    num_0 = len(labels) - num_1
-    if num_0 == 0 or num_1 == 0:
-        return batch, labels
-    elif num_1 < half:
-        rebalance_label = 1
-        num = num_1
-    elif num_0 < half:
-        rebalance_label = 0
-        num = num_0
-    else:
-        return batch, labels
-
-    add_amt = int(half - num)
-    trues_indices = (labels == 1).nonzero().view(-1)
-    new_trues_indices = random_sample_arr(
-        trues_indices, count=add_amt, replace=True)
-
-    new_labels = (torch.zeros((add_amt)) + rebalance_label)
-
-    expanded_batch = torch.cat((batch, batch[new_trues_indices]))
-    expanded_lables = torch.cat((labels, new_labels))
-
-    if shuffle:
-        expanded_batch, expanded_lables = equivariant_shuffle(
-            expanded_batch, expanded_lables)
-
-    return expanded_batch, expanded_lables
+#     return expanded_batch, expanded_lables
 
 
 class NeuriteDataset(torch.utils.data.Dataset):
@@ -459,6 +377,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
                  context_slices: int,
                  num_points: int = None,
                  add_batch_id: bool = False,
+                 drop_false: bool = False,
                  Augmentor: Augmentor = Augmentor(),
                  verbose: bool = False,
                  ):
@@ -476,6 +395,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
         self.Augmentor = Augmentor
         self.verbose = verbose
         self.add_batch_id = add_batch_id
+        self.drop_false = drop_false
 
         self.test_iteration_batch = None
         self.test_iteration_i = 0
@@ -488,9 +408,13 @@ class SliceDataset(torch.utils.data.IterableDataset):
 
         self.cur_drop_start = context_slices-1
         self.cur_vol_i = 0
-
-        self.no_match = 0
         self.candidate_batch_num = 0
+
+        # stats
+        self.no_true = 0
+        self.multi_true = 0
+        self.num_true = 0
+        self.total_examples = 0
 
     def load_next_candidate_batch(self):
 
@@ -543,10 +467,22 @@ class SliceDataset(torch.utils.data.IterableDataset):
         examples, labels = self.get_examples_from_top_class(
             self.vol_relabeled, c, drop, self.label_map)
 
-        # sanity check
+        # get stats and cut off
         num_true = labels.count_nonzero()
         if num_true == 0:
-            self.no_match += 1
+            self.no_true += 1
+        if num_true > 1:
+            self.multi_true += 1
+
+        # crop examples
+        if self.drop_false and num_true >= 1:
+            true_i = list(labels).index(1)
+            labels = labels[:true_i]
+            examples = labels[:true_i]
+
+        # more stats
+        self.num_true += labels.count_nonzero().item()
+        self.total_examples += examples.shape[0]
 
         examples, labels = equivariant_shuffle(
             examples, labels)
@@ -604,10 +540,17 @@ class SliceDataset(torch.utils.data.IterableDataset):
         bot_border[~mask] = 0
         mismatch_classes = list(np.unique(bot_border))
 
-        # Other wise select bottom class by picking 1 neurite from set of labels in radius #
-        assert mismatch_classes[0] == 0, 'first class should be 0, otherwise something went wrong'
-        # remove 0
-        mismatch_classes = list_remove(mismatch_classes, 0)
+        # # Other wise select bottom class by picking 1 neurite from set of labels in radius #
+        # assert mismatch_classes[0] == 0, 'first class should be 0, otherwise something went wrong'
+        # # remove 0
+        # mismatch_classes = list_remove(mismatch_classes, 0)
+
+        # DISTANCE SORT #
+        # get classes in order of distance from top neurite for efficieny we just look at the top_border and bot_border stack
+        d_vol = np.stack([top_border, bot_border])
+        d_vol = crop_where(d_vol, d_vol != 0)
+        mismatch_classes = get_classes_sorted_by_distance(
+            d_vol, top_c, method='mean')
 
         final_vol[0: top_z_len] = top_vol_section
         final_examples = torch.zeros(
@@ -714,6 +657,10 @@ class SliceDataset(torch.utils.data.IterableDataset):
     def get_cur_drop(self):
         cur_drop_end = self.cur_drop_start + self.num_slices
         return (self.cur_drop_start, cur_drop_end)
+
+    def get_stats(self):
+
+        return f'no_true: {self.no_true}, multi_true: {self.multi_true}, num_true: {self.num_true}, total: {self.total_examples}, percent true: {round(self.num_true / self.total_examples,3)}'
 
     def get_next(self):
 
@@ -829,6 +776,7 @@ def generate_dataset(config: str, output_dir: str, batch_size: int, num_workers:
             all_x.append(x)
             all_y.append(y)
 
+        print(dataset.get_stats())
         print(f'concating batches...')
         all_x = torch.cat(all_x)
         all_y = torch.cat(all_y)
