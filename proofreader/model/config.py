@@ -1,5 +1,6 @@
 import math
 import pprint
+from typing import Tuple
 from dataclasses import dataclass
 from torch.utils import data
 
@@ -29,22 +30,24 @@ class AugmentorConfig:
 @dataclass
 class DatasetConfig:
     dataset: str = 'slice'
-    num_slices = 4
+    num_slices = [1, 4]
     radius: int = 96
     context_slices: int = 3
     num_points: int = 1024
     val_split: float = 0.15
     verbose: bool = False
     add_batch_id: bool = False
+    drop_false: bool = True
 
 
 @dataclass
 class ModelConfig:
     model: str = 'curvenet'
-    loss: str = 'ce'
+    loss: str = 'nll'
     optimizer: str = 'AdamW'
     learning_rate: float = 1e-3
     num_classes: int = 2
+    loss_weights: Tuple = (1.0, 1.0)
 
 
 @dataclass
@@ -73,7 +76,8 @@ def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: Augment
             num_points=dataset_config.num_points, Augmentor=augmentor, open_vol=True,  verbose=dataset_config.verbose, shuffle=True, torch=True)
     elif dataset_config.dataset == 'slice':
         dataset = SliceDataset(vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices,
-                               num_points=dataset_config.num_points, Augmentor=augmentor, add_batch_id=dataset_config.add_batch_id, verbose=False)
+                               num_points=dataset_config.num_points, Augmentor=augmentor, add_batch_id=dataset_config.add_batch_id,
+                               drop_false=dataset_config.drop_false, verbose=False)
         return dataset
     else:  # assume its a path
         x, y = torch.load(dataset_config.dataset)
@@ -107,7 +111,7 @@ def build_full_model_from_config(model_config: ModelConfig, dataset_config: Data
     # loss
     if model_config.loss == 'nll':
         loss = F.nll_loss
-    elif model_config.loss == 'ce':
+    elif model_config.loss == 'bce':
         loss = nn.BCELoss()
 
     # optimizer
@@ -133,13 +137,11 @@ def get_config(name):
 
 
 CONFIGS = [
-    ExperimentConfig('curvenet'),
-    ExperimentConfig('cn_context_4_aug_small',
-                     model=ModelConfig(model='curvenet')),
-    ExperimentConfig('curvenet-pre', dataset=DatasetConfig(
-        dataset='/mnt/home/jberman/ceph/pf/dataset/curvenet_dataset_0_train.pt')),
-    ExperimentConfig('pointnet-pre', model=ModelConfig(model='pointnet', learning_rate=1e-4), dataset=DatasetConfig(
-        dataset='/mnt/home/jberman/ceph/pf/dataset/curvenet_dataset_0_train.pt')),
-    ExperimentConfig('pointnet-pre-k1', model=ModelConfig(model='pointnet', learning_rate=1e-3, num_classes=1), dataset=DatasetConfig(
-        dataset='/mnt/home/jberman/ceph/pf/dataset/curvenet_dataset_0_train.pt')),
+    ExperimentConfig('default'),
+    ExperimentConfig('pointnet-default', model=ModelConfig(model='pointnet'),
+                     dataset=DatasetConfig(dataset='neurite')),
+    ExperimentConfig('pointnet-pre-cs2', model=ModelConfig(model='pointnet'), dataset=DatasetConfig(
+        dataset='/mnt/home/jberman/ceph/pf/dataset/ns=1|r=96|cs=2|n[=2000_dataset_0_train.pt', add_batch_id=True)),
+    ExperimentConfig('pointnet-pre-bad-data', model=ModelConfig(model='pointnet'), dataset=DatasetConfig(
+        dataset='/mnt/home/jberman/ceph/pf/dataset/curvenet_dataset_0_train.pt', add_batch_id=True)),
 ]

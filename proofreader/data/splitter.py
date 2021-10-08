@@ -378,6 +378,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
                  num_points: int = None,
                  add_batch_id: bool = False,
                  drop_false: bool = False,
+                 return_candidate_batch: bool = False,
                  Augmentor: Augmentor = Augmentor(),
                  verbose: bool = False,
                  ):
@@ -396,6 +397,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
         self.verbose = verbose
         self.add_batch_id = add_batch_id
         self.drop_false = drop_false
+        self.return_candidate_batch = return_candidate_batch
 
         self.test_iteration_batch = None
         self.test_iteration_i = 0
@@ -408,8 +410,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
 
         self.cur_drop_start = context_slices-1
         self.cur_vol_i = 0
-        self.candidate_batch_num = 0
-
+        self.worker_id = 0
         # stats
         self.no_true = 0
         self.multi_true = 0
@@ -477,22 +478,22 @@ class SliceDataset(torch.utils.data.IterableDataset):
         # crop examples
         if self.drop_false and num_true >= 1:
             true_i = list(labels).index(1)
-            labels = labels[:true_i]
-            examples = labels[:true_i]
+            labels = labels[:true_i+1]
+            examples = examples[:true_i+1]
 
         # more stats
         self.num_true += labels.count_nonzero().item()
         self.total_examples += examples.shape[0]
-
         examples, labels = equivariant_shuffle(
             examples, labels)
 
         if self.add_batch_id:
-            ids = torch.zeros_like(labels) + self.candidate_batch_num
+            candidate_batch_num = int(
+                f'{self.cur_vol_i}{drop[0]}{self.cur_neurite_i}')
+            ids = torch.zeros_like(labels) + candidate_batch_num
             labels = torch.stack((labels, ids), dim=1)
 
         self.cur_neurite_i += 1
-        self.candidate_batch_num += 1
         self.test_iteration_batch = (examples, labels)
         self.test_iteration_len = examples.shape[0]
         self.test_iteration_i = 0
@@ -506,10 +507,6 @@ class SliceDataset(torch.utils.data.IterableDataset):
         for i in range(sz):
             if c in vol[i]:
                 zmin = i
-                break
-        for i in reversed(range(sz)):
-            if c in vol[i]:
-                zmax = i
                 break
         # assert zmax - zmin >= num_slices + \
         #     2, f'zspan of neurite must be at least 2 slices bigger than num_slices to drop, zspan:{zmax - zmin}, num_slices:{num_slices}'
@@ -659,10 +656,15 @@ class SliceDataset(torch.utils.data.IterableDataset):
         return (self.cur_drop_start, cur_drop_end)
 
     def get_stats(self):
-
-        return f'no_true: {self.no_true}, multi_true: {self.multi_true}, num_true: {self.num_true}, total: {self.total_examples}, percent true: {round(self.num_true / self.total_examples,3)}'
+        return f'no_true: {self.no_true}, multi_true: {self.multi_true}, num_true: {self.num_true}, total: {self.total_examples})'
 
     def get_next(self):
+
+        # return entire batch of canidates
+        if self.return_candidate_batch:
+            self.load_next_candidate_batch()
+            (all_examples, all_lables) = self.test_iteration_batch
+            return all_examples, all_lables
 
         # if we have reached the end of the current batch load a new one
         if self.test_iteration_i >= self.test_iteration_len:
@@ -684,14 +686,15 @@ class SliceDataset(torch.utils.data.IterableDataset):
 
     def build_generator(self, drop_start_worker_range=None):
         # for worker parallelization
-        if self.verbose:
+        self.drop_start_worker_range = drop_start_worker_range
+        if drop_start_worker_range is not None:
             worker_info = torch.utils.data.get_worker_info()
             print(
                 f'worker_id: {worker_info.id}, drop_start_worker_range: {drop_start_worker_range}')
-        self.drop_start_worker_range = drop_start_worker_range
-        if self.drop_start_worker_range is not None:
             range_start, _ = self.drop_start_worker_range
             self.cur_drop_start = range_start
+            self.worker_id = worker_info.id
+
         # generator
         while True:
             try:
@@ -706,7 +709,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
         else:  # in a worker process
             vol = self.get_cur_vol()  # assumes vols all same shape
             start, end = self.context_slices, vol.shape[0] - \
-                self.num_slices - self.context_slices
+                self.num_slices - self.context_slices - 1
             # split workload
             per_worker = int(
                 math.ceil((end - start) / float(worker_info.num_workers)))
@@ -722,40 +725,48 @@ class SliceDataset(torch.utils.data.IterableDataset):
 
 
 @click.command()
-@click.option('--config',
-              type=str,
-              help='the config to use'
-              )
 @click.option('--output-dir', '-o',
               type=str, default='/mnt/home/jberman/ceph/pf/dataset',
               help='for output'
               )
-@click.option('--batch-size', '-b',
-              type=int, default=512,
-              help='size of batch for generating dataset'
+@click.option('--num_slices', '-ns',
+              type=int,
+              help='num slices to drop'
+              )
+@click.option('--context_slices', '-cs',
+              type=int,
+              help='num of slices for context on each neurite'
+              )
+@click.option('--num_points', '-np',
+              type=int, default=2048,
               )
 @click.option('--num_workers', '-w',
               type=int, default=-1,
               help='num workers for pytorch dataloader. -1 means automatically set.'
               )
-def generate_dataset(config: str, output_dir: str, batch_size: int, num_workers: int):
+def generate_dataset(output_dir: str, num_slices: int, context_slices: int, num_points: int, num_workers: int):
 
-    config = get_config(config)
+    radius = 96
+    augmentor = Augmentor(center=True, shuffle=True,
+                          normalize=(125, 1250, 1250))
+
+    name = f'ns={num_slices}|r={radius}|cs={context_slices}|np={num_points}'
 
     # auto set
     if num_workers == -1:
         num_workers = get_cpu_count()
+    batch_size = 256
 
     # file management
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     version = 0
-    file_path = f'{output_dir}/{config.name}_dataset'
+    file_path = f'{output_dir}/{name}_dataset'
     while os.path.exists(f'{file_path}_{version}'):
         version += 1
     file_path = f'{file_path}_{version}'
     print(
-        f'name {config.name}, batch_size {batch_size}, num_workers {num_workers}')
+        f'name {name}, batch_size {batch_size}, num_workers {num_workers}')
     print(f'file_path {file_path}...')
 
     print(f'loading volumes...')
@@ -764,11 +775,10 @@ def generate_dataset(config: str, output_dir: str, batch_size: int, num_workers:
     for vols, name in zip([train_vols, test_vols], ['train', 'test']):
         print(f'generating data for {name} set...')
 
-        dataset = build_dataset_from_config(
-            config.dataset, config.augmentor, vols)
-
+        dataset = SliceDataset(vols, num_slices, radius, context_slices,
+                               num_points, Augmentor=augmentor, add_batch_id=True, drop_false=True, verbose=False)
         dataloader = DataLoader(
-            dataset=dataset, batch_size=batch_size, num_workers=num_workers)
+            dataset=dataset, batch_size=batch_size, num_workers=num_workers, drop_last=False, persistent_workers=True)
 
         all_x, all_y = [], []
         for step, batch in tqdm(enumerate(dataloader)):

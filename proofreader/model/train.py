@@ -5,6 +5,7 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -50,7 +51,7 @@ import random
               help='num workers for pytorch dataloader. -1 means automatically set.'
               )
 @click.option('--training-interval', '-t',
-              type=int, default=40, help='training interval in terms of batches.'
+              type=int, default=5, help='training interval in terms of batches.'
               )
 @click.option('--validation-interval', '-v',
               type=int, default=1, help='validation interval in terms of epochs to record validation data.'
@@ -61,9 +62,6 @@ import random
 @click.option('--load',
               type=str, default='', help='load from checkpoint, pass path to ckpt file'
               )
-# @click.option('--use-amp',
-#               type=bool, default=True, help='whether to use distrubited automatic mixed percision.'
-#               )
 @click.option('--ddp',
               type=bool, default=False, help='whether to use distrubited data parallel vs normal data parallel.'
               )
@@ -186,14 +184,15 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
         steps_since_training_interval = 0
         accumulated_loss = 0.0
         all_acc = {}
-        batch_acc = {}
         # TRAIN EPOCH
         for step, batch in enumerate(train_dataloader):
             example_number += batch_size
             steps_since_training_interval += 1
             # get batch
             x, y = batch
-            y = y.to(torch.float32)
+
+            optimizer.zero_grad(set_to_none=True)
+
             if config.dataset.add_batch_id:
                 bid = y[:, 1]
                 y = y[:, 0]
@@ -211,14 +210,15 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
             loss.backward()
             optimizer.step()
 
+            cur_loss = loss.item()
+            accumulated_loss += cur_loss
+            pred = predict_class(y_hat)
+            accs = get_accuracy(y, pred)
+            all_acc = {k: accs.get(k, 0) + all_acc.get(k, 0)
+                       for k in set(accs)}
+
             # record progress / metrics
             if rank == 0:
-                cur_loss = loss.item()
-                accumulated_loss += cur_loss
-                pred = predict_class_sigmoid(y_hat)
-                accs = get_accuracy(y, pred)
-                all_acc = {k: accs.get(k, 0) + all_acc.get(k, 0)
-                           for k in set(accs)}
                 pbar.set_postfix({'cur_loss': round(cur_loss, 3)})
                 pbar.update(1)
                 if steps_since_training_interval == training_interval:
@@ -247,7 +247,6 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                 for step, batch in enumerate(val_dataloader):
                     # get batch
                     x, y = batch
-                    y = y.to(torch.float32)
                     if config.dataset.add_batch_id:
                         bid = y[:, 1]
                         y = y[:, 0]
@@ -260,23 +259,25 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                     # compute loss
                     loss = loss_module(y_hat, y)
 
-            # record validation metrics
-            if rank == 0:
-                pbar.update(1)
-                cur_loss = loss.item()
-                accumulated_loss += cur_loss
-                pred = predict_class_sigmoid(y_hat)
-                accs = get_accuracy(y, pred)
+                    # record validation metrics
+                    cur_loss = loss.item()
+                    accumulated_loss += cur_loss
+                    pred = predict_class(y_hat)
+                    accs = get_accuracy(y, pred)
+                    all_acc = {k: accs.get(k, 0) + all_acc.get(k, 0)
+                               for k in set(accs)}
 
-                all_acc = {k: accs.get(k, 0) + all_acc.get(k, 0)
-                           for k in set(accs)}
+                    if rank == 0:
+                        pbar.update(1)
 
-                v_writer.add_scalar('Loss', round(
-                    accumulated_loss / len(val_dataloader), 3), example_number)
-                for k, v in all_acc.items():
-                    v_writer.add_scalar(
-                        k, round(v / len(val_dataloader), 3), example_number)
-                save_model(model, output_dir, epoch=epoch, optimizer=optimizer)
+                if rank == 0:
+                    v_writer.add_scalar('Loss', round(
+                        accumulated_loss / len(val_dataloader), 3), example_number)
+                    for k, v in all_acc.items():
+                        v_writer.add_scalar(
+                            k, round(v / len(val_dataloader), 3), example_number)
+                    save_model(model, output_dir, epoch=epoch,
+                               optimizer=optimizer)
 
         # VAL STEP
     if rank == 0:

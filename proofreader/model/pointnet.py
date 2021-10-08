@@ -103,8 +103,8 @@ class PointNet(nn.Module):
         x = F.relu(self.bn1(self.fc1(x)))
         x = F.relu(self.bn2(self.fc2(x)))
         x = self.fc3(x)
-        x = self.sigmoid(x)
-        return x.squeeze()
+        x = F.log_softmax(x, dim=-1)
+        return x
 
 
 if __name__ == '__main__':
@@ -112,7 +112,7 @@ if __name__ == '__main__':
     num_points = 1024
     batch_size = 1
     num_feature = 3
-    classes = 1
+    classes = 2
     print(
         f'num_points {num_points}, batch_size {batch_size}, num_feature {num_feature} classes {classes}')
 

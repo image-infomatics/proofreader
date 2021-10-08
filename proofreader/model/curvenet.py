@@ -88,6 +88,7 @@ class CurveNet(nn.Module):
                    inplace=True).squeeze(-1)
         x = self.dp1(x)
         x = self.conv2(x)
+        x = F.log_softmax(x, dim=-1)
         return x
 
 
