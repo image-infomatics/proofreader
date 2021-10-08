@@ -31,7 +31,7 @@ def clean_true_B(vol):
     return vol[16:].copy()
 
 
-def prepare_cremi_vols(path):
+def prepare_cremi_vols(path, validation_slices=None):
     trueA = read_cremi_volume('A', seg=True, path=path)
     trueB = read_cremi_volume('B', seg=True, path=path)
     trueC = read_cremi_volume('C', seg=True, path=path)
@@ -53,11 +53,23 @@ def prepare_cremi_vols(path):
     train_vols = [trueA_train, trueB_train, trueC_train]
     test_vols = [trueA_test, trueB_test, trueC_test]
 
+    if validation_slices is not None:
+        vs = validation_slices*-1
+        val_vols = [trueA_train[vs:].copy(), trueB_train[vs:].copy(),
+                    trueC_train[vs:].copy()]
+        train_vols = [trueA_train[:vs], trueB_train[:vs], trueC_train[:vs]]
+        # redo connected_components to reconnect neurites
+        for i in range(len(val_vols)):
+            val_vols[i] = cc3d.connected_components(val_vols[i])
+
     # redo connected_components to reconnect neurites
     for i in range(len(train_vols)):
         train_vols[i] = cc3d.connected_components(train_vols[i])
 
     for i in range(len(test_vols)):
         test_vols[i] = cc3d.connected_components(test_vols[i])
+
+    if validation_slices is not None:
+        return train_vols, val_vols, test_vols
 
     return train_vols, test_vols

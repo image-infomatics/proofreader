@@ -30,7 +30,7 @@ class AugmentorConfig:
 @dataclass
 class DatasetConfig:
     dataset: str = 'slice'
-    num_slices = [1, 4]
+    num_slices = 2
     radius: int = 96
     context_slices: int = 3
     num_points: int = 1024
