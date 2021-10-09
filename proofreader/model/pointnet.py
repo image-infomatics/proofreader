@@ -69,6 +69,7 @@ class PointNetfeat(nn.Module):
         batchsize = x.size()[0]
         trans = self.stn(x)
         x = x.transpose(2, 1)
+        print(x.shape, trans.shape)
         x = torch.bmm(x, trans)
         x = x.transpose(2, 1)
         x = F.relu(self.bn1(self.conv1(x)))

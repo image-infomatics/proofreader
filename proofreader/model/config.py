@@ -36,8 +36,9 @@ class DatasetConfig:
     num_points: int = 1024
     val_split: float = 0.15
     verbose: bool = False
-    add_batch_id: bool = False
+    add_batch_id: bool = True
     drop_false: bool = True
+    path: str = None
 
 
 @dataclass
@@ -63,6 +64,20 @@ class ExperimentConfig:
         return f'NAME\n{self.name}\nDATASET{d}\nMODEL\n{m}\n'
 
 
+def load_dataset_from_disk(path):
+
+    # assume its a path
+    x, y = torch.load(f'{path}_train.pt')
+    train_dataset = SimpleDataset(x, y, shuffle=True)
+    x, y = torch.load(f'{path}_val.pt')
+    val_dataset = SimpleDataset(x, y, shuffle=True)
+    x, y = torch.load(f'{path}_test.pt')
+    test_dataset = SimpleDataset(x, y, shuffle=True)
+    print(
+        f'# train: {len(train_dataset)}, # val: {len(val_dataset)}, # val: {len(test_dataset)}')
+    return train_dataset, val_dataset, test_dataset
+
+
 def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: AugmentorConfig, vols):
 
     # build augmentor
@@ -79,10 +94,6 @@ def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: Augment
                                num_points=dataset_config.num_points, Augmentor=augmentor, add_batch_id=dataset_config.add_batch_id,
                                drop_false=dataset_config.drop_false, verbose=False)
         return dataset
-    else:  # assume its a path
-        x, y = torch.load(dataset_config.dataset)
-        x, y = equivariant_shuffle(x, y)
-        dataset = SimpleDataset(x, y)
 
     # split into train and val
     split = math.floor(len(dataset)*dataset_config.val_split)
@@ -96,7 +107,9 @@ def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: Augment
 
 
 class SimpleDataset(torch.utils.data.Dataset):
-    def __init__(self, x, y):
+    def __init__(self, x, y, shuffle=False):
+        if shuffle:
+            x, y = equivariant_shuffle(x, y)
         self.x = x
         self.y = y
 
@@ -138,10 +151,6 @@ def get_config(name):
 
 CONFIGS = [
     ExperimentConfig('default'),
-    ExperimentConfig('pointnet-default', model=ModelConfig(model='pointnet'),
-                     dataset=DatasetConfig(dataset='neurite')),
-    ExperimentConfig('pointnet-pre-cs2', model=ModelConfig(model='pointnet'), dataset=DatasetConfig(
-        dataset='/mnt/home/jberman/ceph/pf/dataset/ns=1|r=96|cs=2|n[=2000_dataset_0_train.pt', add_batch_id=True)),
-    ExperimentConfig('pointnet-pre-bad-data', model=ModelConfig(model='pointnet'), dataset=DatasetConfig(
-        dataset='/mnt/home/jberman/ceph/pf/dataset/curvenet_dataset_0_train.pt', add_batch_id=True)),
+    ExperimentConfig('pointnet_ns=1_cs=2', model=ModelConfig(model='pointnet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=1|r=128|cs=2|np=2048_dataset_0')),
 ]

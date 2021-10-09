@@ -13,6 +13,7 @@ from proofreader.data.cremi import prepare_cremi_vols
 from proofreader.model.classifier import *
 from proofreader.model.config import *
 from proofreader.utils.torch import *
+from proofreader.model.test import test_model
 
 import numpy as np
 import click
@@ -43,7 +44,7 @@ import random
               help='number of epochs to train for'
               )
 @click.option('--batch-size', '-b',
-              type=int, default=128,
+              type=int, default=512,
               help='size of mini-batch.'
               )
 @click.option('--num_workers', '-w',
@@ -57,7 +58,7 @@ import random
               type=int, default=1, help='validation interval in terms of epochs to record validation data.'
               )
 @click.option('--test-interval', '-ti',
-              type=int, default=500, help='interval when to run full test.'
+              type=int, default=1, help='interval when to run full test.'
               )
 @click.option('--load',
               type=str, default='', help='load from checkpoint, pass path to ckpt file'
@@ -133,9 +134,13 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
         v_writer = SummaryWriter(log_dir=os.path.join(output_dir, 'log/valid'))
 
     # data
-    train_vols, test_vols = prepare_cremi_vols(path)
-    train_dataset, val_datset = build_dataset_from_config(
-        config.dataset, config.augmentor, train_vols)
+    if config.dataset.path is not None:
+        train_dataset, val_datset, test_dataset = load_dataset_from_disk(
+            config.dataset.path)
+    else:
+        train_vols, test_vols = prepare_cremi_vols(path)
+        train_dataset, val_datset = build_dataset_from_config(
+            config.dataset, config.augmentor, train_vols)
 
     # model
     model, loss_module, optimizer = build_full_model_from_config(
@@ -238,7 +243,6 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
         if validation_interval != 0 and epoch % validation_interval == 0:
             accumulated_loss = 0.0
             all_acc = {}
-            batch_acc = {}
             if rank == 0:
                 pbar.refresh()
                 pbar.reset()
@@ -279,7 +283,14 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                     save_model(model, output_dir, epoch=epoch,
                                optimizer=optimizer)
 
-        # VAL STEP
+        # TEST STEP
+        if test_interval != 0 and epoch % test_interval == 0:
+            if rank == 0:
+                print('Doing Test')
+                metrics = test_model(model, test_dataset, use_gpu=use_gpu)
+                for k, v in metrics.items():
+                    v_writer.add_scalar(k, round(v, 3), epoch)
+
     if rank == 0:
         t_writer.close()
         v_writer.close()

@@ -715,7 +715,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
         else:  # in a worker process
             vol = self.get_cur_vol()  # assumes vols all same shape
             start, end = self.context_slices, vol.shape[0] - \
-                self.num_slices - self.context_slices - 1
+                self.num_slices - self.context_slices
             # split workload
             per_worker = int(
                 math.ceil((end - start) / float(worker_info.num_workers)))
@@ -768,11 +768,8 @@ def generate_dataset(output_dir: str, num_slices: int, context_slices: int, num_
     # file management
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    version = 0
     file_path = f'{output_dir}/{name}_dataset'
-    while os.path.exists(f'{file_path}_{version}'):
-        version += 1
-    file_path = f'{file_path}_{version}'
+
     print(
         f'\nname {name}\nbatch_size {batch_size}, num_workers {num_workers}')
     print(f'file_path {file_path}...')
@@ -785,7 +782,7 @@ def generate_dataset(output_dir: str, num_slices: int, context_slices: int, num_
     print(
         f'| train {train_vols[0].shape} | val {val_vols[0].shape} | test {test_vols[0].shape} |')
 
-    for vols, name in zip([train_vols, val_vols, test_vols], ['train', 'val', 'test']):
+    for vols, name in zip([test_vols], ['test']):
         print(f'generating data for {name} set...')
 
         is_test = name == 'test'
@@ -793,15 +790,17 @@ def generate_dataset(output_dir: str, num_slices: int, context_slices: int, num_
         dataset = SliceDataset(vols, num_slices, radius, context_slices, num_points=num_points, Augmentor=augmentor,
                                add_batch_id=True, truncate_candidates=True, return_candidate_batch=is_test, verbose=False)
 
-        if not is_test:
-            iterator = DataLoader(
-                dataset=dataset, batch_size=batch_size, num_workers=num_workers, drop_last=False, persistent_workers=True)
-        else:
-            iterator = dataset
+        if is_test:
+            batch_size = 1
+
+        iterator = DataLoader(
+            dataset=dataset, batch_size=batch_size, num_workers=num_workers, drop_last=False, persistent_workers=True)
 
         all_x, all_y = [], []
         for step, batch in tqdm(enumerate(iterator)):
             x, y = batch
+            if is_test:
+                x, y = x.squeeze(dim=0), y.squeeze(dim=0)
             all_x.append(x)
             all_y.append(y)
 
@@ -810,7 +809,7 @@ def generate_dataset(output_dir: str, num_slices: int, context_slices: int, num_
             print(f'concating batches...')
             all_x = torch.cat(all_x)
             all_y = torch.cat(all_y)
-        print(f'x: {all_x.shape} y: {all_y.shape}')
+            print(f'x: {all_x.shape} y: {all_y.shape}')
 
         print(f'saving batches...')
         torch.save((all_x, all_y), f'{file_path}_{name}.pt')
