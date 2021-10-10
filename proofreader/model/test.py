@@ -13,8 +13,7 @@ from proofreader.model.config import *
 def test_model(model, test_dataset, use_gpu=True):
     model.eval()
     metrics = {'seen_acc': 0, 'neurite_acc': 0}
-    if use_gpu:
-        model = model.cuda()
+
     with torch.no_grad():
 
         neurites = 0
@@ -29,10 +28,8 @@ def test_model(model, test_dataset, use_gpu=True):
                 x = x.cuda(0, non_blocking=True)
                 y = y.cuda(0, non_blocking=True)
 
-            print(x.shape, y.shape)
             for i in range(x.shape[0]):
                 example = x[i].unsqueeze(dim=0)
-                print(example.shape)
                 y_hat = model(example)
                 pred = predict_class(y_hat)
                 true = int(pred == y[i])
@@ -43,7 +40,7 @@ def test_model(model, test_dataset, use_gpu=True):
                     metrics['neurite_acc'] += true
                     break
 
-    model.training()
+    model.train()
 
     # average metrics
     metrics['seen_acc'] /= seen
@@ -70,6 +67,7 @@ def test(dataset_path: str, config: str, checkpoint_path: str):
     test_dataset = SimpleDataset(x, y, shuffle=False)
     config = get_config(config)
     model, _, _ = build_full_model_from_config(config.model, config.dataset)
+    model = model.cuda()
     model = nn.DataParallel(model)
     model = load_model(model, checkpoint_path)
     metrics = test_model(model, test_dataset, use_gpu=True)

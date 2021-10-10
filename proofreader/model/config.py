@@ -33,7 +33,7 @@ class DatasetConfig:
     num_slices = 2
     radius: int = 96
     context_slices: int = 3
-    num_points: int = 1024
+    num_points: int = 2048
     val_split: float = 0.15
     verbose: bool = False
     add_batch_id: bool = True
@@ -72,9 +72,9 @@ def load_dataset_from_disk(path):
     x, y = torch.load(f'{path}_val.pt')
     val_dataset = SimpleDataset(x, y, shuffle=True)
     x, y = torch.load(f'{path}_test.pt')
-    test_dataset = SimpleDataset(x, y, shuffle=True)
+    test_dataset = SimpleDataset(x, y, shuffle=False)
     print(
-        f'# train: {len(train_dataset)}, # val: {len(val_dataset)}, # val: {len(test_dataset)}')
+        f'# train: {len(train_dataset)}, # val: {len(val_dataset)}, # test: {len(test_dataset)}')
     return train_dataset, val_dataset, test_dataset
 
 
@@ -117,7 +117,7 @@ class SimpleDataset(torch.utils.data.Dataset):
         return self.x[i], self.y[i]
 
     def __len__(self):
-        return self.x.shape[0]
+        return len(self.x)
 
 
 def build_full_model_from_config(model_config: ModelConfig, dataset_config: DatasetConfig):
@@ -125,7 +125,7 @@ def build_full_model_from_config(model_config: ModelConfig, dataset_config: Data
     if model_config.loss == 'nll':
         loss = F.nll_loss
     elif model_config.loss == 'bce':
-        loss = nn.BCELoss()
+        loss = F.cross_entropy
 
     # optimizer
     if model_config.model == 'pointnet':
@@ -152,5 +152,9 @@ def get_config(name):
 CONFIGS = [
     ExperimentConfig('default'),
     ExperimentConfig('pointnet_ns=1_cs=2', model=ModelConfig(model='pointnet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=1|r=128|cs=2|np=2048_dataset_0')),
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=1|r=128|cs=2|np=2048_dataset')),
+    ExperimentConfig('pointnet_ns=2_cs=2', model=ModelConfig(model='pointnet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=2|r=128|cs=2|np=2048_dataset')),
+    ExperimentConfig('curvenet_ns=1_cs=2', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=1|r=128|cs=2|np=2048_dataset')),
 ]

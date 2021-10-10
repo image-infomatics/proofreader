@@ -782,7 +782,7 @@ def generate_dataset(output_dir: str, num_slices: int, context_slices: int, num_
     print(
         f'| train {train_vols[0].shape} | val {val_vols[0].shape} | test {test_vols[0].shape} |')
 
-    for vols, name in zip([test_vols], ['test']):
+    for vols, name in zip([train_vols, val_vols, test_vols], ['train', 'val', 'test']):
         print(f'generating data for {name} set...')
 
         is_test = name == 'test'
