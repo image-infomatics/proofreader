@@ -6,3 +6,4 @@ dataset
 __pycache__
 *logs
 *.ckpt
+*.pt
