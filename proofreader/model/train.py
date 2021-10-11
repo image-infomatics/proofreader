@@ -40,7 +40,7 @@ import random
               help='for output'
               )
 @click.option('--epochs', '-e',
-              type=int, default=1000,
+              type=int, default=100,
               help='number of epochs to train for'
               )
 @click.option('--batch-size', '-b',
@@ -52,7 +52,7 @@ import random
               help='num workers for pytorch dataloader. -1 means automatically set.'
               )
 @click.option('--training-interval', '-t',
-              type=int, default=5, help='training interval in terms of batches.'
+              type=int, default=4, help='num times to log per epoch.'
               )
 @click.option('--validation-interval', '-v',
               type=int, default=1, help='validation interval in terms of epochs to record validation data.'
@@ -171,28 +171,25 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                                   num_workers=num_workers-val_workers, pin_memory=pin_memory, sampler=train_sampler, drop_last=True, shuffle=(train_sampler is None))
     val_dataloader = DataLoader(dataset=val_datset, batch_size=batch_size,
                                 num_workers=val_workers, pin_memory=pin_memory, sampler=val_sampler, drop_last=True, shuffle=(train_sampler is None))
-
+    total_train_batches = len(train_dataloader)
     if rank == 0:
         print("starting...")
         pbar = tqdm(total=len(train_dataloader))
 
-    example_number = 0
     for epoch in range(epochs):
         if rank == 0:
             pbar.refresh()
             pbar.reset()
-            pbar.set_description(f'Epoch {epoch}')
+            pbar.set_description(f'Training {epoch}')
         if ddp:
             train_sampler.set_epoch(epoch)
             val_sampler.set_epoch(epoch)
 
-        steps_since_training_interval = 0
         accumulated_loss = 0.0
         all_acc = {}
         # TRAIN EPOCH
         for step, batch in enumerate(train_dataloader):
-            example_number += batch_size
-            steps_since_training_interval += 1
+
             # get batch
             x, y = batch
 
@@ -218,26 +215,22 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
             cur_loss = loss.item()
             accumulated_loss += cur_loss
             pred = predict_class(y_hat)
-            accs = get_accuracy(y, pred)
+            accs = get_accuracy_sums(y, pred)
             all_acc = {k: accs.get(k, 0) + all_acc.get(k, 0)
                        for k in set(accs)}
 
             # record progress / metrics
             if rank == 0:
-                pbar.set_postfix({'cur_loss': round(cur_loss, 3)})
                 pbar.update(1)
-                if steps_since_training_interval == training_interval:
-                    per_example_loss = round(
-                        accumulated_loss / training_interval, 3)
-                    t_writer.add_scalar(
-                        'Loss', per_example_loss, example_number)
-                    for k, v in all_acc.items():
-                        t_writer.add_scalar(
-                            k, round(v / training_interval, 3), example_number)
 
-                    accumulated_loss = 0.0
-                    all_acc = {}
-                    steps_since_training_interval = 0
+        if rank == 0:
+            per_example_loss = accumulated_loss / total_train_batches
+            t_writer.add_scalar('Loss', per_example_loss, epoch)
+            all_acc = average_accuracy_sums(all_acc)
+            for k, v in all_acc.items():
+                t_writer.add_scalar(k, v, epoch)
+            accumulated_loss = 0.0
+            all_acc = {}
 
         # VAL STEP
         if validation_interval != 0 and epoch % validation_interval == 0:
@@ -246,7 +239,8 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
             if rank == 0:
                 pbar.refresh()
                 pbar.reset()
-                pbar.set_description(f'Validation')
+                pbar.set_description(f'Validation {epoch}')
+            model.eval()
             with torch.no_grad():
                 for step, batch in enumerate(val_dataloader):
                     # get batch
@@ -267,7 +261,7 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                     cur_loss = loss.item()
                     accumulated_loss += cur_loss
                     pred = predict_class(y_hat)
-                    accs = get_accuracy(y, pred)
+                    accs = get_accuracy_sums(y, pred)
                     all_acc = {k: accs.get(k, 0) + all_acc.get(k, 0)
                                for k in set(accs)}
 
@@ -275,19 +269,20 @@ def train(config: str, path: str, seed: int, output_dir: str, epochs: int, batch
                         pbar.update(1)
 
                 if rank == 0:
-                    v_writer.add_scalar('Loss', round(
-                        accumulated_loss / len(val_dataloader), 3), example_number)
+                    v_writer.add_scalar(
+                        'Loss',   accumulated_loss / len(val_dataloader), epoch)
+                    all_acc = average_accuracy_sums(all_acc)
                     for k, v in all_acc.items():
-                        v_writer.add_scalar(
-                            k, round(v / len(val_dataloader), 3), example_number)
+                        v_writer.add_scalar(k, v, epoch)
                     save_model(model, output_dir, epoch=epoch,
                                optimizer=optimizer)
+            model.train()
 
         # TEST STEP
         if test_interval != 0 and epoch % test_interval == 0:
+            metrics = test_model(
+                model, test_dataset, use_gpu=use_gpu, batch_size=batch_size, rank=rank)
             if rank == 0:
-                print('Doing Test')
-                metrics = test_model(model, test_dataset, use_gpu=use_gpu)
                 for k, v in metrics.items():
                     v_writer.add_scalar(k, round(v, 3), epoch)
 

@@ -21,12 +21,37 @@ def predict_class(y_hat):
     return pred_max
 
 
-def get_accuracy(y, pred):
+def get_accuracy(y, pred, ret_perfect=False):
     correct = (y == pred).type(torch.float32)
     total_acc = torch.mean(correct)
     true_acc = torch.mean(correct[y == 1])
     false_acc = torch.mean(correct[y == 0])
-    return {'total_acc': total_acc.item(), 'true_acc': true_acc.item(), 'false_acc': false_acc.item()}
+    accs = {'total_acc': total_acc.item(), 'true_acc': true_acc.item(),
+            'false_acc': false_acc.item()}
+    if ret_perfect:
+        accs['perfect'] = int(total_acc.item() == 1.0)
+    return accs
+
+
+def get_accuracy_sums(y, pred):
+    correct = (y == pred).type(torch.float32)
+    total_acc = torch.sum(correct)
+    true_acc = torch.sum(correct[y == 1])
+    false_acc = torch.sum(correct[y == 0])
+    accs = {'total_acc': total_acc.item(), 'true_acc': true_acc.item(
+    ), 'false_acc': false_acc.item(), 'false_count': len(correct[y == 0]), 'true_count': len(correct[y == 1])}
+
+    return accs
+
+
+def average_accuracy_sums(all_accs):
+    avg_acc = {
+        'total_acc': all_accs['total_acc'] / (all_accs['false_count'] + all_accs['true_count']),
+        'true_acc': all_accs['true_acc'] / (all_accs['true_count']),
+        'false_acc': all_accs['false_acc'] / (all_accs['false_count']),
+    }
+
+    return avg_acc
 
 
 def accumulate_accuracy_per_batch(totals, y, pred, bid):

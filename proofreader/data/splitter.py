@@ -730,6 +730,22 @@ class SliceDataset(torch.utils.data.IterableDataset):
             return self.build_generator(drop_start_worker_range=drop_start_worker_range)
 
 
+def analyze_dataset(x, y):
+
+    bids = y[:, 1]
+    y = y[:, 0]
+    total_examples = len(x)
+    total_true = y.count_nonzero().item()
+    total_false = y[y == 0].count_nonzero().item()
+    percent_false = total_false / total_examples
+    percent_true = total_true / total_examples
+    uids = np.unique(bids)
+    num_batches = len(uids)
+    for uid in uids:
+        idxs = bids == uid
+        bx, by = x[idxs], y[idxs]
+
+
 @click.command()
 @click.option('--output-dir', '-o',
               type=str, default='/mnt/home/jberman/ceph/pf/dataset',
@@ -758,7 +774,7 @@ def generate_dataset(output_dir: str, num_slices: int, context_slices: int, num_
     augmentor = Augmentor(center=True, shuffle=True,
                           normalize=(125, 1250, 1250))
 
-    name = f'ns={num_slices}|r={radius}|cs={context_slices}|np={num_points}'
+    name = f'ns={num_slices}_cs={context_slices}_r={radius}_np={num_points}'
 
     # auto set
     if num_workers == -1:

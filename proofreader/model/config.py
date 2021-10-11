@@ -71,8 +71,17 @@ def load_dataset_from_disk(path):
     train_dataset = SimpleDataset(x, y, shuffle=True)
     x, y = torch.load(f'{path}_val.pt')
     val_dataset = SimpleDataset(x, y, shuffle=True)
-    x, y = torch.load(f'{path}_test.pt')
-    test_dataset = SimpleDataset(x, y, shuffle=False)
+
+    # merge canidate batches for testset
+    X, Y = torch.load(f'{path}_test.pt')
+    # reset batch id
+    for i in range(len(X)):
+        y = Y[i]
+        y[:, 1] = i
+
+    X, Y = torch.cat(X), torch.cat(Y)
+    test_dataset = SimpleDataset(X, Y, shuffle=True)
+
     print(
         f'# train: {len(train_dataset)}, # val: {len(val_dataset)}, # test: {len(test_dataset)}')
     return train_dataset, val_dataset, test_dataset
@@ -151,10 +160,35 @@ def get_config(name):
 
 CONFIGS = [
     ExperimentConfig('default'),
-    ExperimentConfig('pointnet_ns=1_cs=2', model=ModelConfig(model='pointnet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=1|r=128|cs=2|np=2048_dataset')),
-    ExperimentConfig('pointnet_ns=2_cs=2', model=ModelConfig(model='pointnet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=2|r=128|cs=2|np=2048_dataset')),
-    ExperimentConfig('curvenet_ns=1_cs=2', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=1|r=128|cs=2|np=2048_dataset')),
+
+    # cs2
+    ExperimentConfig('curvenet_ns1_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=1_r=128_cs=2_np=2048_dataset')),
+
+    ExperimentConfig('curvenet_ns2_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=2_r=128_cs=2_np=2048_dataset')),
+
+    ExperimentConfig('curvenet_ns3_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=3_r=128_cs=2_np=2048_dataset')),
+
+    ExperimentConfig('curvenet_ns4_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=4_r=128_cs=2_np=2048_dataset')),
+
+    ExperimentConfig('curvenet_ns5_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=5_r=128_cs=2_np=2048_dataset')),
+
+    ExperimentConfig('curvenet_ns6_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=6_cs=2_r=128_np=2048_dataset')),
+
+    ExperimentConfig('curvenet_ns8_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=8_cs=2_r=128_np=2048_dataset')),
+
+    # cs3
+    ExperimentConfig('curvenet_ns3_cs3', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=3_cs=3_r=128_np=2048_dataset')),
+
+    # cs4
+    ExperimentConfig('curvenet_ns3_cs4', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/ns=3_cs=4_r=128_np=2048_dataset')),
+
 ]
