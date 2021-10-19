@@ -1,12 +1,13 @@
 import torch
 import gc
 import os
-from .all import readable_bytes
+from .data import readable_bytes
 from torch.utils.data import DistributedSampler, Dataset
 from torch.utils.data.sampler import Sampler
 from typing import Iterator, List, Optional, Union
 import numpy as np
 from operator import itemgetter
+from .data import equivariant_shuffle
 
 
 def get_all_live_tensors():
@@ -110,6 +111,28 @@ def weighted_binary_cross_entropy(output, target, weights=None):
             (1 - target) * torch.log(1 - output)
 
     return torch.neg(torch.mean(loss))
+
+
+class SimpleDataset(torch.utils.data.Dataset):
+    def __init__(self, x, y, shuffle=False, augmentor=None, info=None):
+        if shuffle:
+            x, y = equivariant_shuffle(x, y)
+        self.x = x
+        self.y = y
+        self.augmentor = augmentor
+        self.info = info
+
+    def __getitem__(self, i):
+        x = self.x[i]
+        y = self.y[i]
+        if self.augmentor is not None:
+            x = x.numpy()
+            x = self.augmentor(x)
+            x = torch.tensor(x)
+        return x, y
+
+    def __len__(self):
+        return len(self.x)
 
 
 class MultiEpochsDataLoader(torch.utils.data.DataLoader):

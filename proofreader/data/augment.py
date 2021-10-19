@@ -1,5 +1,5 @@
 import numpy as np
-
+from proofreader.utils.data import random_sample_arr
 
 """
 SOME CODE BORROWED FROM: https://github.com/charlesq34/pointnet2/blob/master/utils/provider.py
@@ -10,9 +10,8 @@ class Augmentor(object):
     def __init__(self,
                  shuffle: bool = False,
                  center: bool = False,
-                 rotate: bool = False,
-                 scale: bool = False,
-                 jitter: bool = False,
+                 random_scale: bool = False,
+                 num_points: int = None,
                  normalize: tuple = [125, 1250, 1250]
                  ):
         """
@@ -20,39 +19,62 @@ class Augmentor(object):
         """
         self.shuffle = shuffle
         self.center = center
-        self.rotate = rotate
-        self.scale = scale
-        self.jitter = jitter
+        self.random_scale = random_scale
         self.normalize = normalize
+        self.num_points = num_points
+
+    def __call__(self, data):
+        return self.transfrom(data)
 
     def transfrom(self, data):
         """ Apply transforms to pointcloud data
         Input:
-            NxC array
+            NxD array
         Output:
-            NxC array
+            NxD array
         """
-        assert data.shape[0] > data.shape[1], 'data should be size POINTSxDIMS'
+
+        swapped = False
+        if data.shape[0] < data.shape[1]:
+            data = np.swapaxes(data, 0, 1)
+            swapped = True
+
+        if self.num_points is not None:
+            data = sample_points(data, self.num_points)
 
         if self.normalize is not None:
             data = normalize_point_cloud(data, self.normalize)
 
-        if self.rotate:
-            data = rotate_point_cloud(data)
-
-        if self.scale:
-            data = random_scale_point_cloud(data)
-
-        if self.jitter:
-            data = jitter_point_cloud(data)
-
         if self.center:
             data = center_pointcloud(data)
+
+        if self.random_scale:
+            data = random_scale_point_cloud(data)
 
         if self.shuffle:
             data = shuffle_points(data)
 
+        if swapped:
+            data = np.swapaxes(data, 0, 1)
+
         return data
+
+
+def sample_points(data, num_points):
+    """ Sample num_points from the point cloud
+        Input:
+            NxC array
+        Output:
+            num_points x C array
+    """
+    cur_points = data.shape[0]
+    replace = False
+    if cur_points < num_points:
+        print(
+            f'not enough points, need {num_points}, have {cur_points}, replace sampling to fix')
+        replace = True
+    data = random_sample_arr(data, count=num_points, replace=replace)
+    return data
 
 
 def normalize_point_cloud(data, factor):

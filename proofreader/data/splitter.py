@@ -1,8 +1,7 @@
 from torch.utils.data import DataLoader
-from proofreader.model.config import *
 from proofreader.data.cremi import prepare_cremi_vols
 import click
-
+import torch.multiprocessing
 from proofreader.data.augment import Augmentor
 from typing import List
 import numpy as np
@@ -22,42 +21,12 @@ from proofreader.utils.torch import *
 from tqdm import tqdm
 
 
-# def balance_binary_batch(batch, labels, shuffle=False):
-#     """
-#     Takes a batch of examples and labels of [0,1] and copies randomly samples
-#     copies of which ever class is under represented until there is equal
-#     representation of each class .
-#     """
-
-#     half = len(labels) // 2
-#     num_1 = torch.count_nonzero(labels).squeeze()
-#     num_0 = len(labels) - num_1
-#     if num_0 == 0 or num_1 == 0:
-#         return batch, labels
-#     elif num_1 < half:
-#         rebalance_label = 1
-#         num = num_1
-#     elif num_0 < half:
-#         rebalance_label = 0
-#         num = num_0
-#     else:
-#         return batch, labels
-
-#     add_amt = int(half - num)
-#     trues_indices = (labels == 1).nonzero().view(-1)
-#     new_trues_indices = random_sample_arr(
-#         trues_indices, count=add_amt, replace=True)
-
-#     new_labels = (torch.zeros((add_amt)) + rebalance_label)
-
-#     expanded_batch = torch.cat((batch, batch[new_trues_indices]))
-#     expanded_lables = torch.cat((labels, new_labels))
-
-#     if shuffle:
-#         expanded_batch, expanded_lables = equivariant_shuffle(
-#             expanded_batch, expanded_lables)
-
-#     return expanded_batch, expanded_lables
+def resize_along_z(img, nx, ny):
+    assert len(img.shape) == 3
+    (sz, sy, sx) = img.shape
+    resized_image = resize(img, (sz, ny, nx), preserve_range=True,
+                           anti_aliasing=False, order=0)
+    return resized_image
 
 
 class NeuriteDataset(torch.utils.data.Dataset):
@@ -376,10 +345,10 @@ class SliceDataset(torch.utils.data.IterableDataset):
                  radius: int,
                  context_slices: int,
                  num_points: int = None,
-                 add_batch_id: bool = False,
-                 truncate_candidates: bool = False,
-                 return_candidate_batch: bool = False,
-                 randomize: bool = False,
+                 truncate_candidates: int = 0,
+                 candidate_group: bool = False,
+                 allow_multiple: bool = False,
+                 scale: int = None,
                  Augmentor: Augmentor = Augmentor(),
                  verbose: bool = False,
                  ):
@@ -387,7 +356,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
         # clean vols
         self.vols = []
         for vol in vols:
-            vol = zero_classes_with_min_volume(vol, 500)
+            vol = zero_classes_with_min_volume(vol, 800)
             self.vols.append(vol)
 
         self.num_slices = num_slices
@@ -396,10 +365,10 @@ class SliceDataset(torch.utils.data.IterableDataset):
         self.num_points = num_points
         self.Augmentor = Augmentor
         self.verbose = verbose
-        self.add_batch_id = add_batch_id
         self.truncate_candidates = truncate_candidates
-        self.return_candidate_batch = return_candidate_batch
-        self.randomize = randomize
+        self.candidate_group = candidate_group
+        self.allow_multiple = allow_multiple
+        self.scale = scale
 
         self.test_iteration_batch = None
         self.test_iteration_i = 0
@@ -425,8 +394,8 @@ class SliceDataset(torch.utils.data.IterableDataset):
             if self.verbose:
                 print('getting all top neurites for drop')
 
-            # only increment if its not the init or for randomize
-            if self.top_neurites.shape[0] > 0 or self.randomize:
+            # only increment if its not the init
+            if self.top_neurites.shape[0] > 0:
                 self.increment_vol_and_drop()
 
             vol = self.get_cur_vol()
@@ -438,9 +407,15 @@ class SliceDataset(torch.utils.data.IterableDataset):
             # and do connected_components do relablel/detach neurites on
             # either side of the volume
             vol_relabeled = np.zeros_like(vol)
-            vol_relabeled[drop_start -
-                          cs:drop_start] = vol[drop_start-cs:drop_start]
-            vol_relabeled[drop_end:drop_end+cs] = vol[drop_end:drop_end+cs]
+            if self.allow_multiple:
+                vol_relabeled[:drop_start] = vol[:drop_start]
+                vol_relabeled[drop_end:] = vol[drop_end:]
+            else:
+                vol_relabeled[drop_start -
+                              cs:drop_start] = vol[drop_start-cs:drop_start]
+                vol_relabeled[drop_end:drop_end+cs] = vol[drop_end:drop_end+cs]
+            # vol_relabeled[:drop_start] = vol[:drop_start]
+            # vol_relabeled[drop_end:] = vol[drop_end:]
 
             # remeber where the background is then reset in after cc
             zero_indices = vol_relabeled == 0
@@ -461,11 +436,12 @@ class SliceDataset(torch.utils.data.IterableDataset):
             self.vol_relabeled = vol_relabeled
             self.label_map = label_map
 
-        if self.verbose:
-            print('getting top neurite batch')
-
         drop = self.get_cur_drop()
         c = self.top_neurites[self.cur_neurite_i]
+
+        if self.verbose:
+            print('getting top neurite batch')
+            print(f'top neurite class: {self.label_map[c]}')
 
         examples, labels = self.get_examples_from_top_class(
             self.vol_relabeled, c, drop, self.label_map)
@@ -478,22 +454,30 @@ class SliceDataset(torch.utils.data.IterableDataset):
             self.multi_true += 1
 
         # crop examples
-        if self.truncate_candidates and num_true >= 1:
-            true_i = list(labels).index(1)
-            labels = labels[:true_i+1]
-            examples = examples[:true_i+1]
-
+        if self.truncate_candidates != 0:
+            # negative on means truncate to the true index
+            if self.truncate_candidates == -1 and num_true >= 1:
+                true_i = list(labels).index(1)
+                labels = labels[:true_i+1]
+                examples = examples[:true_i+1]
+            # otherwise truncat to the given index
+            else:
+                # if its less than append zeros to fill out
+                if len(examples) < self.truncate_candidates:
+                    ndummy = self.truncate_candidates - len(examples)
+                    for i in range(ndummy):
+                        dummy_x = torch.zeros_like(examples[0]).unsqueeze(0)
+                        dummy_y = torch.zeros_like(labels[0]).unsqueeze(0)
+                        labels = torch.cat((labels, dummy_y))
+                        examples = torch.cat((examples, dummy_x))
+                else:
+                    labels = labels[:self.truncate_candidates]
+                    examples = examples[:self.truncate_candidates]
         # more stats
         self.num_true += labels.count_nonzero().item()
         self.total_examples += examples.shape[0]
         # examples, labels = equivariant_shuffle(
         #     examples, labels)
-
-        if self.add_batch_id:
-            candidate_batch_num = int(
-                f'{self.cur_vol_i}{drop[0]}{self.cur_neurite_i}')
-            ids = torch.zeros_like(labels) + candidate_batch_num
-            labels = torch.stack((labels, ids), dim=1)
 
         self.cur_neurite_i += 1
         self.test_iteration_batch = (examples, labels)
@@ -537,12 +521,6 @@ class SliceDataset(torch.utils.data.IterableDataset):
         mask = circular_mask(
             bot_border.shape[0], bot_border.shape[1], center=(com_y, com_x), radius=self.radius)
         bot_border[~mask] = 0
-        mismatch_classes = list(np.unique(bot_border))
-
-        # # Other wise select bottom class by picking 1 neurite from set of labels in radius #
-        # assert mismatch_classes[0] == 0, 'first class should be 0, otherwise something went wrong'
-        # # remove 0
-        # mismatch_classes = list_remove(mismatch_classes, 0)
 
         # DISTANCE SORT #
         # get classes in order of distance from top neurite for efficieny we just look at the top_border and bot_border stack
@@ -602,14 +580,15 @@ class SliceDataset(torch.utils.data.IterableDataset):
 
         # final crop and relabel
         vol_example = crop_where(vol_example, vol_example != 0)
-        vol_example = cc3d.connected_components(vol_example)
 
-        # sanity check
-        all_classes = np.unique(vol_example)
-        assert len(
-            all_classes) == 3, f'final sample should have 3 classes, [0, n1, n2] not {all_classes}'
+        if not self.allow_multiple:
+            vol_example = cc3d.connected_components(vol_example)
+            all_classes = np.unique(vol_example)
+            assert len(
+                all_classes) == 3, f'final sample should have 3 classes, [0, n1, n2] not {all_classes}'
 
-        # grid_volume(color.label2rgb(vol_example, bg_label=0))
+        if self.scale is not None:
+            vol_example = resize_along_z(vol_example, self.scale, self.scale)
 
         # remove interiors
         vol_example = self.remove_vol_interiors(vol_example)
@@ -640,11 +619,6 @@ class SliceDataset(torch.utils.data.IterableDataset):
             print('increment drop')
         self.cur_drop_start += 1
         range_start, range_stop = self.get_drop_start_range()
-        if self.randomize:
-            self.cur_drop_start = random.randint(range_start, range_stop-1)
-            self.cur_vol_i = random.randint(0, len(self.vols)-1)
-            print(
-                f'random drop start {self.cur_drop_start} vol {self.cur_vol_i}')
 
         # if we have reached the end of the vol, do to next vol
         if self.cur_drop_start >= range_stop:
@@ -667,7 +641,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
 
     def get_next(self):
         # return entire batch of canidates
-        if self.return_candidate_batch:
+        if self.candidate_group:
             self.load_next_candidate_batch()
             (all_examples, all_lables) = self.test_iteration_batch
             return all_examples, all_lables
@@ -730,106 +704,93 @@ class SliceDataset(torch.utils.data.IterableDataset):
             return self.build_generator(drop_start_worker_range=drop_start_worker_range)
 
 
-def analyze_dataset(x, y):
-
-    bids = y[:, 1]
-    y = y[:, 0]
-    total_examples = len(x)
-    total_true = y.count_nonzero().item()
-    total_false = y[y == 0].count_nonzero().item()
-    percent_false = total_false / total_examples
-    percent_true = total_true / total_examples
-    uids = np.unique(bids)
-    num_batches = len(uids)
-    for uid in uids:
-        idxs = bids == uid
-        bx, by = x[idxs], y[idxs]
-
-
 @click.command()
 @click.option('--output-dir', '-o',
               type=str, default='/mnt/home/jberman/ceph/pf/dataset',
               help='for output'
               )
+@click.option('--multiple', '-m',
+              type=bool, required=True,
+              help='weather to allow multiple disconnected components on either side'
+              )
 @click.option('--num_slices', '-ns',
-              type=int,
+              type=int, required=True,
               help='num slices to drop'
               )
 @click.option('--context_slices', '-cs',
-              type=int,
+              type=int, required=True,
               help='num of slices for context on each neurite'
               )
 @click.option('--num_points', '-np',
               type=int, default=2048,
               )
 @click.option('--radius', '-r',
-              type=int, default=128,
+              type=int, default=96,
+              )
+@click.option('--truncate_candidates', '-t',
+              type=int, default=-1,
+              help='how to truncate the candidates batches'
+              )
+@click.option('--scale', '-sc',
+              type=int, default=None,
+              help='the size to scale each example in X,Y'
               )
 @click.option('--num_workers', '-w',
               type=int, default=-1,
               help='num workers for pytorch dataloader. -1 means automatically set.'
               )
-def generate_dataset(output_dir: str, num_slices: int, context_slices: int, num_points: int, radius: int, num_workers: int):
+def generate_dataset(output_dir: str, multiple: bool, num_slices: int, context_slices: int, num_points: int, radius: int, truncate_candidates: int, scale: int, num_workers: int):
 
-    augmentor = Augmentor(center=True, shuffle=True,
-                          normalize=(125, 1250, 1250))
-
-    name = f'ns={num_slices}_cs={context_slices}_r={radius}_np={num_points}'
+    name = f'm={multiple}_ns={num_slices}_cs={context_slices}_r={radius}_np={num_points}_t={truncate_candidates}_sc={scale}'
 
     # auto set
     if num_workers == -1:
         num_workers = get_cpu_count()
-    batch_size = 256
+    batch_size = 1
 
     # file management
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    file_path = f'{output_dir}/{name}_dataset'
+    file_path = f'{output_dir}/DATASET_{name}'
 
     print(
         f'\nname {name}\nbatch_size {batch_size}, num_workers {num_workers}')
     print(f'file_path {file_path}...')
 
     print(f'loading volumes...')
-    validation_slices = num_slices + (context_slices*2)+1
+    validation_slices = num_slices + (context_slices*2)+4
     print('validation_slices', validation_slices)
     train_vols, val_vols, test_vols = prepare_cremi_vols(
         './dataset/cremi', validation_slices=validation_slices)
     print(
         f'| train {train_vols[0].shape} | val {val_vols[0].shape} | test {test_vols[0].shape} |')
 
-    for vols, name in zip([train_vols, val_vols, test_vols], ['train', 'val', 'test']):
+    torch.multiprocessing.set_sharing_strategy('file_system')
+    for vols, name in zip([val_vols, train_vols, test_vols], ['val', 'train', 'test']):
         print(f'generating data for {name} set...')
 
-        is_test = name == 'test'
-
-        dataset = SliceDataset(vols, num_slices, radius, context_slices, num_points=num_points, Augmentor=augmentor,
-                               add_batch_id=True, truncate_candidates=True, return_candidate_batch=is_test, verbose=False)
-
-        if is_test:
-            batch_size = 1
+        dataset = SliceDataset(vols, num_slices, radius, context_slices, num_points=num_points, allow_multiple=multiple, scale=scale,
+                               Augmentor=None, truncate_candidates=truncate_candidates, candidate_group=True, verbose=False)
 
         iterator = DataLoader(
-            dataset=dataset, batch_size=batch_size, num_workers=num_workers, drop_last=False, persistent_workers=True)
+            dataset=dataset, batch_size=batch_size, num_workers=num_workers, drop_last=False)
 
         all_x, all_y = [], []
         for step, batch in tqdm(enumerate(iterator)):
             x, y = batch
-            if is_test:
-                x, y = x.squeeze(dim=0), y.squeeze(dim=0)
+            x, y = x.squeeze(dim=0), y.squeeze(dim=0)
             all_x.append(x)
             all_y.append(y)
 
-        print(dataset.get_stats())
-        if not is_test:
-            print(f'concating batches...')
-            all_x = torch.cat(all_x)
-            all_y = torch.cat(all_y)
-            print(f'x: {all_x.shape} y: {all_y.shape}')
+        # set candidate id
+        for i in range(len(all_y)):
+            by = all_y[i]
+            bid = torch.zeros_like(by) + i
+            all_y[i] = torch.stack((by, bid), dim=1)
 
         print(f'saving batches...')
         torch.save((all_x, all_y), f'{file_path}_{name}.pt')
-
+        print(f'x: {len(all_x)} y: {len(all_y)}')
         print(f'finished {name}!')
 
 

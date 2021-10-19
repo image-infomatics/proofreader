@@ -11,19 +11,24 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 from proofreader.data.splitter import NeuriteDataset, SliceDataset
-from proofreader.data.augment import Augmentor
+from proofreader.data.augment import Augmentor, sample_points
 from proofreader.model.pointnet import PointNet
-from proofreader.model.curvenet import CurveNet
-from proofreader.utils.data import equivariant_shuffle
+from proofreader.model.curvenet import CurveNet, ParallelCurveNet
+from proofreader.model.transnet import PointTransformerCls
+from proofreader.utils.torch import SimpleDataset
+from proofreader.model.test import build_test_dataset
+
+# TODO
+#       implement candaite prediction
+#       implement scale to same size
+#       maybe implement label feature?
 
 
 @dataclass
 class AugmentorConfig:
     shuffle: bool = True
     center: bool = True
-    rotate: bool = False
-    scale: bool = False
-    jitter: bool = False
+    random_scale: bool = False
     normalize: tuple = (125, 1250, 1250)
 
 
@@ -36,15 +41,15 @@ class DatasetConfig:
     num_points: int = 2048
     val_split: float = 0.15
     verbose: bool = False
-    add_batch_id: bool = True
-    drop_false: bool = True
     path: str = None
+    truncate_canidates: int = 4
+    scale: bool = False
 
 
 @dataclass
 class ModelConfig:
     model: str = 'curvenet'
-    loss: str = 'nll'
+    loss: str = 'bce'
     optimizer: str = 'AdamW'
     learning_rate: float = 1e-3
     num_classes: int = 2
@@ -64,27 +69,70 @@ class ExperimentConfig:
         return f'NAME\n{self.name}\nDATASET{d}\nMODEL\n{m}\n'
 
 
-def load_dataset_from_disk(path):
+def load_dataset_from_disk(dataset_config, aug_config):
 
-    # assume its a path
-    x, y = torch.load(f'{path}_train.pt')
-    train_dataset = SimpleDataset(x, y, shuffle=True)
-    x, y = torch.load(f'{path}_val.pt')
-    val_dataset = SimpleDataset(x, y, shuffle=True)
+    # build augmentor
+    train_augmentor = Augmentor(center=aug_config.center, shuffle=aug_config.shuffle, normalize=aug_config.normalize, num_points=dataset_config.num_points,
+                                random_scale=aug_config.random_scale)
 
-    # merge canidate batches for testset
-    X, Y = torch.load(f'{path}_test.pt')
-    # reset batch id
-    for i in range(len(X)):
-        y = Y[i]
-        y[:, 1] = i
+    test_augmentor = Augmentor(center=aug_config.center, shuffle=aug_config.shuffle, normalize=aug_config.normalize, num_points=dataset_config.num_points,
+                               random_scale=False)
 
-    X, Y = torch.cat(X), torch.cat(Y)
-    test_dataset = SimpleDataset(X, Y, shuffle=True)
+    path = dataset_config.path
+    train_dataset = build_dataset_from_path(
+        f'{path}_train.pt', truncate_canidates=dataset_config.truncate_canidates, merge_canidates=True, augmentor=train_augmentor)
+    val_dataset = build_dataset_from_path(
+        f'{path}_val.pt', truncate_canidates=dataset_config.truncate_canidates, merge_canidates=True, augmentor=test_augmentor)
+    test_dataset = build_dataset_from_path(
+        f'{path}_test.pt', truncate_canidates=dataset_config.truncate_canidates, merge_canidates=True, augmentor=test_augmentor)
 
     print(
         f'# train: {len(train_dataset)}, # val: {len(val_dataset)}, # test: {len(test_dataset)}')
     return train_dataset, val_dataset, test_dataset
+
+
+def build_dataset_from_path(path, truncate_canidates, merge_canidates, augmentor=None):
+
+    x, y = torch.load(path)
+
+    stats = {}
+    # number of total neurites we attempt to merge
+    stats['total_neurites'] = len(y)
+    # number of total times we should merge before truncation of canidates
+    stats['merge_opportunities'] = 0
+    # the reducation in total possible success rate due to the inital truncation
+    stats['truncate_succ_loss'] = 0
+    stats['truncated_total_examples'] = 0
+    stats['truncated_positive_examples'] = 0
+    stats['truncated_negative_examples'] = 0
+    for i in range(len(x)):
+
+        stats['merge_opportunities'] += torch.sum(y[i][:, 0]).item()
+        if truncate_canidates != 0:
+            if len(y[i][truncate_canidates:]) > 0:
+                stats['truncate_succ_loss'] += torch.sum(
+                    y[i][truncate_canidates:][:, 0]).item()
+            x[i] = x[i][:truncate_canidates]
+            y[i] = y[i][:truncate_canidates]
+
+        stats['truncated_total_examples'] += y[i].shape[0]
+        stats['truncated_positive_examples'] += (
+            y[i][:, 0] == 1).count_nonzero().item()
+        stats['truncated_negative_examples'] += (
+            y[i][:, 0] == 0).count_nonzero().item()
+
+    stats['truncate_succ_loss'] /= stats['merge_opportunities']
+    stats['truncated_positive_examples'] /= stats['truncated_total_examples']
+    stats['truncated_negative_examples'] /= stats['truncated_total_examples']
+
+    if merge_canidates:
+        x, y = torch.cat(x), torch.cat(y)
+
+    ds = SimpleDataset(x, y, shuffle=False, augmentor=augmentor, info=stats)
+
+    print(path, stats)
+
+    return ds
 
 
 def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: AugmentorConfig, vols):
@@ -93,6 +141,7 @@ def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: Augment
     augmentor = Augmentor(center=aug_config.center, shuffle=aug_config.shuffle,
                           rotate=aug_config.rotate, scale=aug_config.scale,
                           jitter=aug_config.jitter, normalize=aug_config.normalize)
+
     # build dataset
     if dataset_config.dataset == 'neurite':
         dataset = NeuriteDataset(
@@ -100,8 +149,7 @@ def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: Augment
             num_points=dataset_config.num_points, Augmentor=augmentor, open_vol=True,  verbose=dataset_config.verbose, shuffle=True, torch=True)
     elif dataset_config.dataset == 'slice':
         dataset = SliceDataset(vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices,
-                               num_points=dataset_config.num_points, Augmentor=augmentor, add_batch_id=dataset_config.add_batch_id,
-                               drop_false=dataset_config.drop_false, verbose=False)
+                               num_points=dataset_config.num_points, Augmentor=augmentor, verbose=False)
         return dataset
 
     # split into train and val
@@ -113,20 +161,6 @@ def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: Augment
     print(f'# train: {len(ds_train)}, # val: {len(ds_val)}')
 
     return ds_train, ds_val
-
-
-class SimpleDataset(torch.utils.data.Dataset):
-    def __init__(self, x, y, shuffle=False):
-        if shuffle:
-            x, y = equivariant_shuffle(x, y)
-        self.x = x
-        self.y = y
-
-    def __getitem__(self, i):
-        return self.x[i], self.y[i]
-
-    def __len__(self):
-        return len(self.x)
 
 
 def build_full_model_from_config(model_config: ModelConfig, dataset_config: DatasetConfig):
@@ -142,6 +176,9 @@ def build_full_model_from_config(model_config: ModelConfig, dataset_config: Data
                          classes=model_config.num_classes)
     elif model_config.model == 'curvenet':
         model = CurveNet()
+    elif model_config.model == 'transnet':
+        model = PointTransformerCls(num_points=dataset_config.num_points,
+                                    num_classes=model_config.num_classes)
 
     # optimizer
     if model_config.optimizer == 'AdamW':
@@ -161,34 +198,15 @@ def get_config(name):
 CONFIGS = [
     ExperimentConfig('default'),
 
-    # cs2
-    ExperimentConfig('curvenet_ns1_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=1_r=128_cs=2_np=2048_dataset')),
+    ExperimentConfig('CURVENET_ns1_cs_3_m_true_t_4', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=True_ns=1_cs=3_r=96_np=4096_t=0', truncate_canidates=4)),
 
-    ExperimentConfig('curvenet_ns2_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=2_r=128_cs=2_np=2048_dataset')),
+    ExperimentConfig('CURVENET_ns1_cs_3_m_false_t_4', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=False_ns=1_cs=3_r=96_np=4096_t=0', truncate_canidates=4)),
 
-    ExperimentConfig('curvenet_ns3_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=3_r=128_cs=2_np=2048_dataset')),
+    ExperimentConfig('CURVENET_ns1_cs_3_m_false_t_4_scale', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=False_ns=1_cs=3_r=96_np=2048_t=0_sc=1000', truncate_canidates=4, scale=True), augmentor=AugmentorConfig(normalize=(6, 1000, 1000))),
 
-    ExperimentConfig('curvenet_ns4_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=4_r=128_cs=2_np=2048_dataset')),
-
-    ExperimentConfig('curvenet_ns5_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=5_r=128_cs=2_np=2048_dataset')),
-
-    ExperimentConfig('curvenet_ns6_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=6_cs=2_r=128_np=2048_dataset')),
-
-    ExperimentConfig('curvenet_ns8_cs2', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=8_cs=2_r=128_np=2048_dataset')),
-
-    # cs3
-    ExperimentConfig('curvenet_ns3_cs3', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=3_cs=3_r=128_np=2048_dataset')),
-
-    # cs4
-    ExperimentConfig('curvenet_ns3_cs4', model=ModelConfig(model='curvenet', loss='bce'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/ns=3_cs=4_r=128_np=2048_dataset')),
-
+    ExperimentConfig('CURVENET_ns1_cs_3_m_true_t_4_scale', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=True_ns=1_cs=3_r=96_np=2048_t=0_sc=1000', truncate_canidates=4, scale=True), augmentor=AugmentorConfig(normalize=(6, 1000, 1000))),
 ]
