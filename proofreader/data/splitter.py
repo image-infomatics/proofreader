@@ -728,7 +728,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
               type=int, default=96,
               )
 @click.option('--truncate_candidates', '-t',
-              type=int, default=-1,
+              type=int, default=0,
               help='how to truncate the candidates batches'
               )
 @click.option('--scale', '-sc',

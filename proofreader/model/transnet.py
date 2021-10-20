@@ -109,10 +109,10 @@ class StackedAttention(nn.Module):
 
 
 class PointTransformerCls(nn.Module):
-    def __init__(self, num_points, num_classes):
+    def __init__(self, dim, num_classes):
         super().__init__()
         output_channels = num_classes
-        d_points = num_points
+        d_points = dim
         self.conv1 = nn.Conv1d(d_points, 64, kernel_size=1, bias=False)
         self.conv2 = nn.Conv1d(64, 64, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm1d(64)
@@ -135,6 +135,7 @@ class PointTransformerCls(nn.Module):
         self.linear3 = nn.Linear(256, output_channels)
 
     def forward(self, x):
+        x = x.permute(0, 2, 1)
         xyz = x[..., :3]
         x = x.permute(0, 2, 1)
         batch_size, _, _ = x.size()
@@ -223,15 +224,15 @@ def farthest_point_sample(xyz, npoint):
 
 if __name__ == '__main__':
     torch.manual_seed(0)
-    num_points = 1024
-    batch_size = 8
+    num_points = 2048
+    batch_size = 64
     num_classes = 2
     k = 20
     print(
         f'num_points {num_points}, batch_size {batch_size}, k {k}, num_classes {num_classes}')
-    model = PointTransformerCls(num_points=num_points, num_classes=num_classes)
+    model = PointTransformerCls(dim=3, num_classes=num_classes)
 
-    x = torch.rand(batch_size, 32, num_points)
+    x = torch.rand(batch_size, num_points, 3)
     y_hat = model(x)
 
     print(f'in shape {x.shape}')

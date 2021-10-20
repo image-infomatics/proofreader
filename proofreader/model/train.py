@@ -91,7 +91,7 @@ def build_curve_fig(x, y, thresholds=None, rm_last=False):
               help='for output'
               )
 @click.option('--epochs', '-e',
-              type=int, default=32,
+              type=int, default=100,
               help='number of epochs to train for'
               )
 @click.option('--batch-size', '-b',
@@ -207,6 +207,10 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
     # handle GPU and parallelism
     pin_memory = False
     train_sampler, val_sampler, test_sampler = None, None, None
+    if config.dataset.balance_samples:
+        train_sampler = BalanceClassSampler(
+            list(train_dataset.y[:, 0].numpy()), mode='upsampling')
+
     if use_gpu:
         # gpu with DistributedDataParallel
         if ddp:
@@ -250,8 +254,7 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
 
     for epoch in range(epochs):
         if rank == 0:
-            pbar.refresh()
-            pbar.reset()
+            pbar.reset(total=total_train_batches)
             pbar.set_description(f'Training {epoch}')
         if ddp:
             train_sampler.set_epoch(epoch)
