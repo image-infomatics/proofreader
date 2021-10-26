@@ -8,7 +8,6 @@ import numpy as np
 import torch
 import random
 import cc3d
-from proofreader.utils.all import list_remove
 from proofreader.utils.vis import *
 from proofreader.utils.data import *
 from proofreader.data.augment import Augmentor
