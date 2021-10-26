@@ -105,7 +105,7 @@ def test(dataset_path: str, config: str, checkpoint_path: str):
     test_dataset = SimpleDataset(x, y, shuffle=True)
 
     config = get_config(config)
-    model, _, _ = build_full_model_from_config(config.model, config.dataset)
+    model, _, _, _ = build_full_model_from_config(config.model, config.dataset)
     model = model.cuda()
     model = nn.DataParallel(model)
     model = load_model(model, checkpoint_path)

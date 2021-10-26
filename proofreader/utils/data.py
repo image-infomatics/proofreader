@@ -155,6 +155,28 @@ def get_classes_which_zspan_at_least(vol, span):
     return res
 
 
+def zero_classes_with_zspan_less_than(vol, span, zero_val=0):
+    counts = {}
+    for i in range(vol.shape[0]):
+        slice = vol[i]
+        classes = np.unique(slice)
+        for c in classes:
+            if c in counts:
+                counts[c] += 1
+            else:
+                counts[c] = 0
+    res = []
+    for c, cnt in counts.items():
+        if cnt < span:
+            res.append(c)
+    res = np.array(res)
+    mask = np.isin(vol, res)
+    new_vol = vol.copy()
+    new_vol[mask] = zero_val
+
+    return new_vol
+
+
 def get_classes_with_at_least_volume(vol, min_volume):
     classes, counts = get_classes_sorted_by_volume(
         vol, return_counts=True, reverse=True)
@@ -199,8 +221,8 @@ def correspond_labels(key, val, bg_label=0):
     for c in classes:
         if c != bg_label:
             corr = np.unique(val[key == c])
-            if len(corr) > 1:
-                print('warn, multiple correspondance')
+            # if len(corr) > 1:
+            #     print('warn, multiple correspondance')
             res[c] = corr[-1]
     return res
 

@@ -1,5 +1,3 @@
-from re import X
-from numpy.core.numeric import zeros_like
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -10,12 +8,13 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
-from proofreader.data.cremi import prepare_cremi_vols
 from proofreader.model.classifier import *
 from proofreader.model.config import *
 from proofreader.utils.torch import *
-from proofreader.model.test import test_model
+from proofreader.utils.voi import voi
+from proofreader.data.cremi import prepare_cremi_vols
 
+from collections import defaultdict
 import numpy as np
 import click
 from tqdm import tqdm
@@ -23,6 +22,7 @@ import os
 import random
 import shutil
 import matplotlib.pyplot as plt
+from multiprocessing.pool import ThreadPool
 
 
 def build_mesh_figs(data, title='', marker='.', lim=None):
@@ -44,7 +44,16 @@ def build_mesh_figs(data, title='', marker='.', lim=None):
     return figs
 
 
-def build_curve_fig(x, y, thresholds=None, rm_last=False):
+pr_config = {'xlabel': 'Error', 'ylabel': 'Success',
+             'title': 'Merge Error and Success for Thresholds',
+             'xlim': [0.0, 0.65], 'ylim': [0.5, 1.0]}
+
+voi_config = {'xlabel': 'Threshold', 'ylabel': 'Voi',
+              'title': 'Voi per Threshold',
+              'xlim': [0.0, 1.0]}
+
+
+def build_curve_fig(x, y, thresholds=None, rm_last=False, config={}):
 
     if rm_last:
         x = x[:-1]
@@ -54,11 +63,17 @@ def build_curve_fig(x, y, thresholds=None, rm_last=False):
     fig = plt.figure(figsize=(8, 8))
     plt.plot(x, y, zorder=1)
     plt.scatter(x, y, c=thresholds, s=26, edgecolors='k', zorder=2)
-    plt.xlabel('Error')
-    plt.ylabel('Success')
-    plt.title('Merge Error and Success for Thresholds')
-    plt.xlim([0.0, 0.65])
-    plt.ylim([0.5, 1.0])
+    if 'xlabel' in config:
+        plt.xlabel(config['xlabel'])
+    if 'ylabel' in config:
+        plt.ylabel(config['ylabel'])
+    if 'title' in config:
+        plt.title(config['title'])
+    if 'xlim' in config:
+        plt.xlim(config['xlim'])
+    if 'ylim' in config:
+        plt.ylim(config['ylim'])
+
     plt.grid()
     # label
     if thresholds is not None:
@@ -195,14 +210,15 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
     if config.dataset.path is not None:
         train_dataset, val_dataset, test_dataset = load_dataset_from_disk(
             config.dataset, config.augmentor)
-    else:
-        train_vols, test_vols = prepare_cremi_vols(path)
-        train_dataset, val_dataset = build_dataset_from_config(
-            config.dataset, config.augmentor, train_vols)
+
+    # get vols for voi
+    train_vols, test_vols = prepare_cremi_vols(
+        '/mnt/home/jberman/sc/proofreader/dataset/cremi')
+
     # model
     print('building model...')
-    model, loss_module, optimizer = build_full_model_from_config(
-        config.model, config.dataset)
+    model, loss_module, optimizer, scheduler = build_full_model_from_config(
+        config.model, config.dataset, epochs)
 
     # handle GPU and parallelism
     pin_memory = False
@@ -235,21 +251,26 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
 
     print('building dataloader...')
     val_workers = 4
+
+    def collate_info(b):
+        xs, ys, infos = [[t[i] for t in b] for i in range(len(b[0]))]
+        return torch.stack(xs), torch.stack(ys), np.array(infos)
+
     train_dataloader = DataLoader(dataset=train_dataset, batch_size=batch_size,
                                   num_workers=num_workers-val_workers, pin_memory=pin_memory, sampler=train_sampler, drop_last=True, shuffle=(train_sampler is None))
     val_dataloader = DataLoader(dataset=val_dataset, batch_size=batch_size,
-                                num_workers=val_workers, pin_memory=pin_memory, sampler=val_sampler, drop_last=False, shuffle=(val_sampler is None))
+                                num_workers=val_workers, pin_memory=pin_memory, sampler=val_sampler, drop_last=False, shuffle=(val_sampler is None), collate_fn=collate_info)
     test_dataloader = DataLoader(dataset=test_dataset, batch_size=batch_size,
-                                 num_workers=val_workers, pin_memory=pin_memory, sampler=test_sampler, drop_last=False, shuffle=(test_sampler is None))
+                                 num_workers=val_workers, pin_memory=pin_memory, sampler=test_sampler, drop_last=False, shuffle=(test_sampler is None), collate_fn=collate_info)
 
     total_train_batches = len(train_dataloader)
 
     thresholds = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
     print("starting training...")
     if rank == 0:
-        t_writer.add_text('train_dataset', str(train_dataset.info))
-        t_writer.add_text('val_dataset',  str(val_dataset.info))
-        t_writer.add_text('test_dataset',  str(test_dataset.info))
+        t_writer.add_text('train_dataset', str(train_dataset.stats))
+        t_writer.add_text('val_dataset',  str(val_dataset.stats))
+        t_writer.add_text('test_dataset',  str(test_dataset.stats))
         pbar = tqdm(total=total_train_batches)
 
     for epoch in range(epochs):
@@ -286,6 +307,7 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
 
             loss.backward()
             optimizer.step()
+            scheduler.step()
 
             cur_loss = loss.item()
             accumulated_loss += cur_loss
@@ -303,28 +325,27 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
             per_example_loss = accumulated_loss / (total_train_batches)
             t_writer.add_scalar('Loss', per_example_loss, epoch)
             plot_merge_curve(all_acc, thresholds, t_writer,
-                             train_dataset.info, 'merge_curve', epoch)
+                             train_dataset.stats, 'merge_curve', epoch)
 
             accumulated_loss = 0.0
             all_acc = {}
 
         # VAL STEP
         if validation_interval != 0 and (epoch+1) % validation_interval == 0:
-            for cur_dataloader, dataset, writer in zip([val_dataloader, test_dataloader], [val_dataset, test_dataset], [v_writer, s_writer]):
+            for cur_dataloader, dataset, writer, run in zip([val_dataloader, test_dataloader], [val_dataset, test_dataset], [v_writer, s_writer], ['Val', 'Test']):
                 accumulated_loss = 0.0
                 all_acc = {}
-                y_hats, ys, bids = [], [], []
+                y_hats, ys, bids, infos = [], [], [], []
                 mesh_err, mesh_miss = [], []
                 if rank == 0:
                     pbar.reset(total=len(cur_dataloader))
-                    pbar.set_description(f'Val {epoch}')
+                    pbar.set_description(f'{run} {epoch}')
                 model.eval()
 
                 with torch.no_grad():
                     for step, batch in enumerate(cur_dataloader):
                         # get batch
-                        x, y = batch
-
+                        x, y, info = batch
                         bid = y[..., 1]
                         y = y[..., 0]
 
@@ -372,6 +393,7 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
                         y_hats.append(torch.exp(y_hat))
                         ys.append(y)
                         bids.append(bid)
+                        infos.append(info)
 
                         if rank == 0:
                             pbar.update(1)
@@ -394,22 +416,29 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
                         writer.add_scalar(
                             'Loss',   accumulated_loss / (len(cur_dataloader)), epoch)
 
+                        # flatten batches
+                        ys, y_hats, bids, infos = torch.cat(
+                            ys), torch.cat(y_hats), torch.cat(bids), np.concatenate(infos)
+
                         # max batch predication
-                        ys, y_hats, bids = torch.cat(
-                            ys), torch.cat(y_hats), torch.cat(bids)
                         max_acc = {}
                         for t in thresholds:
                             max_acc[t] = max_canidate_prediction(
                                 y_hats, ys, bids, threshold=t)
 
                         plot_merge_curve(
-                            all_acc, thresholds, writer, dataset.info, 'merge_curve', epoch)
+                            all_acc, thresholds, writer, dataset.stats, 'merge_curve', epoch)
                         plot_merge_curve(
-                            max_acc, thresholds, writer, dataset.info, 'merge_curve_max', epoch)
+                            max_acc, thresholds, writer, dataset.stats, 'merge_curve_max', epoch)
 
                         # Normal PR curve
                         writer.add_pr_curve(
                             'pr_curve', ys, y_hats[:, 1], global_step=epoch, num_thresholds=len(thresholds))
+
+                        # voi
+                        if run == 'Test':
+                            plot_voi_curve(test_vols, infos,
+                                           y_hats, thresholds, writer, epoch)
 
                         plt.close('all')
 
@@ -423,10 +452,10 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
         pbar.close()
 
 
-def plot_merge_curve(accs, thresholds, writer, dataset_info, tag, epoch):
+def plot_merge_curve(accs, thresholds, writer, dataset_stats, tag, epoch):
 
-    total_neurites = dataset_info['total_neurites']
-    merge_opps = dataset_info['merge_opportunities']
+    total_neurites = dataset_stats['total_neurites']
+    merge_opps = dataset_stats['merge_opportunities']
     # normal curve
     succ, err, tp, fp, tn, fn = [], [], [], [], [], []
     for t in thresholds:
@@ -446,9 +475,112 @@ def plot_merge_curve(accs, thresholds, writer, dataset_info, tag, epoch):
                             succ, err, global_step=epoch, num_thresholds=len(thresholds))
 
     # merge curve plt figures
-    fig = build_curve_fig(err, succ, thresholds=thresholds, rm_last=True)
+    fig = build_curve_fig(err, succ, thresholds=thresholds,
+                          rm_last=True, config=pr_config)
     writer.add_figure(f'{tag}_plt', fig,
                       global_step=epoch)
+
+
+def plot_voi_curve(vols, infos, y_hats, thresholds, writer, epoch):
+    print('computing voi curve...')
+    total, merge, split = [], [], []
+
+    # multithreaded
+    args = [(vols, infos, y_hats, t) for t in thresholds]
+    with ThreadPool(processes=len(thresholds)) as pool:
+        vois_arr = pool.map(do_voi, args)
+
+    # aggregate
+    for (avg_split_del, avg_merge_del) in vois_arr:
+        split.append(avg_split_del)
+        merge.append(avg_merge_del)
+        total.append(avg_split_del + avg_merge_del)
+
+# Voi Split
+    voi_config['title'] = 'ΔVoi Split per Threshold'
+    fig = build_curve_fig(
+        thresholds, split, config=voi_config)
+    writer.add_figure(f'voi_curve_split', fig,
+                      global_step=epoch)
+    # Voi Merge
+    voi_config['title'] = 'ΔVoi Merge per Threshold'
+    fig = build_curve_fig(
+        thresholds, merge, config=voi_config)
+    writer.add_figure(f'voi_curve_merge', fig,
+                      global_step=epoch)
+    # Voi Total
+    voi_config['title'] = 'ΔVoi Total per Threshold'
+    fig = build_curve_fig(
+        thresholds, total, config=voi_config)
+    writer.add_figure(f'voi_curve_total', fig,
+                      global_step=epoch)
+    print('finished voi curve!')
+
+
+def do_voi(args):
+    vols, infos, y_hats, threshold = args
+    y_hats = y_hats.cpu().numpy()
+    # select infos according to y_hats and threshold
+    true_infos = infos[y_hats[:, 1] > threshold]
+
+    if len(true_infos) <= 0:
+        return 0, 0
+
+    # group infos into dict: vol_i -> drop_start -> [infos]
+    grouped = defaultdict(lambda: defaultdict(list))
+    for info in true_infos:
+        vol_i, drop_start = info['volume_i'], info['drop_start']
+        grouped[vol_i][drop_start].append(info)
+
+    # get total voi
+    split_del, merge_del = 0, 0
+    num_drops = 0
+    for (vol_i, drops) in grouped.items():
+        num_drops += len(drops)
+        # multithreaded
+        args = [(vols[vol_i], drop_start, true_infos)
+                for drop_start, true_infos in drops.items()]
+        with ThreadPool(processes=len(drops)) as pool:
+            vois_arr = pool.map(compute_voi_for_drop, args)
+        # aggregate
+        for (split, merge) in vois_arr:
+            split_del += split
+            merge_del += merge
+
+    (avg_split_del, avg_merge_del) = split_del/num_drops, merge_del/num_drops
+    return (avg_split_del, avg_merge_del)
+
+
+def compute_voi_for_drop(args):
+    gt, drop_start, true_infos = args
+    drop_end = true_infos[0]['drop_end']
+
+    # create gt segmentation and split segmentation
+    temp = gt[drop_start:drop_end]  # store drop slices to reset later
+    gt[drop_start:drop_end] = 0  # drop slices from gt
+    split = gt.copy()
+    offset = int(np.max(gt))+1  # relabel bot section for split
+    split[drop_end:] += offset
+
+    # measure voi before intervention
+    (split_pre, merge_pre) = voi(split, gt)
+
+    for info in true_infos:
+        # find classes merge neurites
+        top_c = info['top_class']
+        # corresponding class in relabel bot section
+        bot_c = info['bot_class'] + offset
+        split[split == bot_c] = top_c  # perform merge on split segmentation
+
+    # measure voi after intervention
+    (split_post, merge_post) = voi(split, gt)
+    # get change in voi
+    split_del, merge_del = split_post - split_pre, merge_post - merge_pre
+
+    # reset dropped slice so vol is unaltered
+    gt[drop_start:drop_end] = temp
+
+    return (split_del, merge_del)
 
 
 if __name__ == '__main__':

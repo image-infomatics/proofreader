@@ -113,22 +113,26 @@ def weighted_binary_cross_entropy(output, target, weights=None):
     return torch.neg(torch.mean(loss))
 
 
-class SimpleDataset(torch.utils.data.Dataset):
-    def __init__(self, x, y, shuffle=False, augmentor=None, info=None):
+class DatasetWithInfo(torch.utils.data.Dataset):
+    def __init__(self, x, y, info=None, shuffle=False, augmentor=None, stats=None):
         if shuffle:
             x, y = equivariant_shuffle(x, y)
         self.x = x
         self.y = y
-        self.augmentor = augmentor
         self.info = info
+        self.augmentor = augmentor
+        self.stats = stats
 
     def __getitem__(self, i):
         x = self.x[i]
         y = self.y[i]
+  
         if self.augmentor is not None:
             x = x.numpy()
             x = self.augmentor(x)
             x = torch.tensor(x)
+        if self.info is not None:
+            return x, y, self.info[i]
         return x, y
 
     def __len__(self):

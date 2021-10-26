@@ -353,12 +353,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
                  verbose: bool = False,
                  ):
 
-        # clean vols
-        self.vols = []
-        for vol in vols:
-            vol = zero_classes_with_min_volume(vol, 800)
-            self.vols.append(vol)
-
+        self.vols = vols
         self.num_slices = num_slices
         self.radius = radius
         self.context_slices = context_slices
@@ -382,11 +377,6 @@ class SliceDataset(torch.utils.data.IterableDataset):
         self.cur_drop_start = context_slices-1
         self.cur_vol_i = 0
         self.worker_id = 0
-        # stats
-        self.no_true = 0
-        self.multi_true = 0
-        self.num_true = 0
-        self.total_examples = 0
 
     def load_next_candidate_batch(self):
 
@@ -422,6 +412,10 @@ class SliceDataset(torch.utils.data.IterableDataset):
             vol_relabeled = cc3d.connected_components(vol_relabeled)
             vol_relabeled[zero_indices] = 0
 
+            # # if we allowed multiple then recrop afterwards
+            # if self.allow_multiple:
+            #     vol_relabeled[drop_start -cs:drop_start]
+
             # create a map from the new lables to the original labels
             # this allows us to figure out the ground truth for accuracy
             label_map = correspond_labels(vol_relabeled, vol, bg_label=0)
@@ -443,23 +437,18 @@ class SliceDataset(torch.utils.data.IterableDataset):
             print('getting top neurite batch')
             print(f'top neurite class: {self.label_map[c]}')
 
-        examples, labels = self.get_examples_from_top_class(
+        examples, labels, classes = self.get_examples_from_top_class(
             self.vol_relabeled, c, drop, self.label_map)
 
-        # get stats and cut off
-        num_true = labels.count_nonzero()
-        if num_true == 0:
-            self.no_true += 1
-        if num_true > 1:
-            self.multi_true += 1
-
         # crop examples
+        num_true = labels.count_nonzero()
         if self.truncate_candidates != 0:
             # negative on means truncate to the true index
             if self.truncate_candidates == -1 and num_true >= 1:
                 true_i = list(labels).index(1)
                 labels = labels[:true_i+1]
                 examples = examples[:true_i+1]
+                classes = classes[:true_i+1]
             # otherwise truncat to the given index
             else:
                 # if its less than append zeros to fill out
@@ -473,14 +462,13 @@ class SliceDataset(torch.utils.data.IterableDataset):
                 else:
                     labels = labels[:self.truncate_candidates]
                     examples = examples[:self.truncate_candidates]
-        # more stats
-        self.num_true += labels.count_nonzero().item()
-        self.total_examples += examples.shape[0]
-        # examples, labels = equivariant_shuffle(
-        #     examples, labels)
+                    classes = classes[:self.truncate_candidates]
+
+        # keeps track of which example represet which neurites across which drop on which vol
+        merge_info = self.build_merge_information(classes, labels)
 
         self.cur_neurite_i += 1
-        self.test_iteration_batch = (examples, labels)
+        self.test_iteration_batch = (examples, labels, merge_info)
         self.test_iteration_len = examples.shape[0]
         self.test_iteration_i = 0
 
@@ -533,6 +521,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
         final_examples = torch.zeros(
             (len(mismatch_classes), 3, self.num_points))
         final_lables = []
+        classes = []
         for i, bot_c in enumerate(mismatch_classes):
 
             cur_vol = final_vol.copy()
@@ -547,8 +536,9 @@ class SliceDataset(torch.utils.data.IterableDataset):
             final_examples[i] = pc
             label = int(label_map[top_c] == label_map[bot_c])
             final_lables.append(label)
+            classes.append((label_map[top_c], label_map[bot_c]))
 
-        return final_examples, torch.tensor(final_lables)
+        return final_examples, torch.tensor(final_lables), classes
 
     def remove_vol_interiors(self, vol):
 
@@ -603,6 +593,15 @@ class SliceDataset(torch.utils.data.IterableDataset):
 
         return pc_example
 
+    def build_merge_information(self, classes, labels):
+        drop_start, drop_end = self.get_cur_drop()
+        infos = []
+        for lbl, cl in zip(labels, classes):
+            info = {'top_class': cl[0], 'bot_class': cl[1], 'drop_start': drop_start,
+                    'drop_end': drop_end, 'volume_i': self.cur_vol_i, 'label': bool(lbl.item())}
+            infos.append(info)
+        return infos
+
     def get_drop_start_range(self):
         # point at each drop end cannot exceede
         cur_vol = self.get_cur_vol()
@@ -636,15 +635,12 @@ class SliceDataset(torch.utils.data.IterableDataset):
         cur_drop_end = self.cur_drop_start + self.num_slices
         return (self.cur_drop_start, cur_drop_end)
 
-    def get_stats(self):
-        return f'no_true: {self.no_true}, multi_true: {self.multi_true}, num_true: {self.num_true}, total: {self.total_examples})'
-
     def get_next(self):
         # return entire batch of canidates
         if self.candidate_group:
             self.load_next_candidate_batch()
-            (all_examples, all_lables) = self.test_iteration_batch
-            return all_examples, all_lables
+            (all_examples, all_lables, all_info) = self.test_iteration_batch
+            return all_examples, all_lables, all_info
 
         # if we have reached the end of the current batch load a new one
         if self.test_iteration_i >= self.test_iteration_len:
@@ -653,16 +649,16 @@ class SliceDataset(torch.utils.data.IterableDataset):
             self.load_next_candidate_batch()
 
         # get the example from the batch in object state
-        (all_examples, all_lables) = self.test_iteration_batch
+        (all_examples, all_lables, all_info) = self.test_iteration_batch
 
         if self.verbose:
             print(
                 f'vol: {self.cur_vol_i}, drop: {self.get_cur_drop()}, neurite: {self.cur_neurite_i}, candidate: {self.test_iteration_i}')
 
-        x, y = all_examples[self.test_iteration_i], all_lables[self.test_iteration_i]
+        x, y, i = all_examples[self.test_iteration_i], all_lables[self.test_iteration_i], all_info[self.test_iteration_i]
         self.test_iteration_i += 1
 
-        return x, y
+        return x, y, i
 
     def build_generator(self, drop_start_worker_range=None):
         # for worker parallelization
@@ -741,7 +737,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
               )
 def generate_dataset(output_dir: str, multiple: bool, num_slices: int, context_slices: int, num_points: int, radius: int, truncate_candidates: int, scale: int, num_workers: int):
 
-    name = f'm={multiple}_ns={num_slices}_cs={context_slices}_r={radius}_np={num_points}_t={truncate_candidates}_sc={scale}'
+    name = f'ns={num_slices}_cs={context_slices}_sc={scale}'
 
     # auto set
     if num_workers == -1:
@@ -755,7 +751,7 @@ def generate_dataset(output_dir: str, multiple: bool, num_slices: int, context_s
 
     print(
         f'\nname {name}\nbatch_size {batch_size}, num_workers {num_workers}')
-    print(f'file_path {file_path}...')
+    print(f'file_path {file_path}')
 
     print(f'loading volumes...')
     validation_slices = num_slices + (context_slices*2)+4
@@ -772,15 +768,19 @@ def generate_dataset(output_dir: str, multiple: bool, num_slices: int, context_s
         dataset = SliceDataset(vols, num_slices, radius, context_slices, num_points=num_points, allow_multiple=multiple, scale=scale,
                                Augmentor=None, truncate_candidates=truncate_candidates, candidate_group=True, verbose=False)
 
-        iterator = DataLoader(
-            dataset=dataset, batch_size=batch_size, num_workers=num_workers, drop_last=False)
+        def collate_fn(data):
+            assert len(data) == 1, 'only supports batch_size of 1'
+            return data[0]
 
-        all_x, all_y = [], []
+        iterator = DataLoader(
+            dataset=dataset, batch_size=batch_size, num_workers=num_workers, drop_last=False, collate_fn=collate_fn)
+
+        all_x, all_y, all_i = [], [], []
         for step, batch in tqdm(enumerate(iterator)):
-            x, y = batch
-            x, y = x.squeeze(dim=0), y.squeeze(dim=0)
+            x, y, i = batch
             all_x.append(x)
             all_y.append(y)
+            all_i.append(i)
 
         # set candidate id
         for i in range(len(all_y)):
@@ -789,7 +789,7 @@ def generate_dataset(output_dir: str, multiple: bool, num_slices: int, context_s
             all_y[i] = torch.stack((by, bid), dim=1)
 
         print(f'saving batches...')
-        torch.save((all_x, all_y), f'{file_path}_{name}.pt')
+        torch.save((all_x, all_y, all_i), f'{file_path}_{name}.pt')
         print(f'x: {len(all_x)} y: {len(all_y)}')
         print(f'finished {name}!')
 

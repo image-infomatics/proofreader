@@ -1,4 +1,4 @@
-import math
+import numpy as np
 import pprint
 from typing import Tuple
 from dataclasses import dataclass
@@ -6,14 +6,13 @@ from dataclasses import dataclass
 from torch.utils.data import Subset
 import torch
 import torch.nn.functional as F
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
-
-from proofreader.data.splitter import NeuriteDataset, SliceDataset
 from proofreader.data.augment import Augmentor
 from proofreader.model.pointnet import PointNet
 from proofreader.model.curvenet import CurveNet
 from proofreader.model.transnet import PointTransformerCls
-from proofreader.utils.torch import SimpleDataset
+from proofreader.utils.torch import DatasetWithInfo
 
 
 @dataclass
@@ -45,7 +44,9 @@ class ModelConfig:
     model: str = 'curvenet'
     loss: str = 'bce'
     optimizer: str = 'AdamW'
+    scheduler: str = 'cos'
     learning_rate: float = 1e-3
+    k: int = 20
     num_classes: int = 2
     loss_weights: Tuple = (1.0, 1.0)
 
@@ -76,18 +77,18 @@ def load_dataset_from_disk(dataset_config, aug_config):
     train_dataset = build_dataset_from_path(
         f'{path}_train.pt', truncate_canidates=dataset_config.truncate_canidates, merge_canidates=True, augmentor=train_augmentor)
     val_dataset = build_dataset_from_path(
-        f'{path}_val.pt', truncate_canidates=dataset_config.truncate_canidates, merge_canidates=True, augmentor=test_augmentor)
+        f'{path}_val.pt', truncate_canidates=dataset_config.truncate_canidates, merge_canidates=True, augmentor=test_augmentor, use_info=True)
     test_dataset = build_dataset_from_path(
-        f'{path}_test.pt', truncate_canidates=dataset_config.truncate_canidates, merge_canidates=True, augmentor=test_augmentor)
+        f'{path}_test.pt', truncate_canidates=dataset_config.truncate_canidates, merge_canidates=True, augmentor=test_augmentor, use_info=True)
 
     print(
         f'# train: {len(train_dataset)}, # val: {len(val_dataset)}, # test: {len(test_dataset)}')
     return train_dataset, val_dataset, test_dataset
 
 
-def build_dataset_from_path(path, truncate_canidates, merge_canidates, augmentor=None):
+def build_dataset_from_path(path, truncate_canidates, merge_canidates, augmentor=None, use_info=False):
 
-    x, y = torch.load(path)
+    x, y, info = torch.load(path)
 
     stats = {}
     # number of total neurites we attempt to merge
@@ -111,6 +112,7 @@ def build_dataset_from_path(path, truncate_canidates, merge_canidates, augmentor
                     y[i][truncate_canidates:][:, 0]).item()
             x[i] = x[i][:truncate_canidates]
             y[i] = y[i][:truncate_canidates]
+            info[i] = info[i][:truncate_canidates]
 
         pe = (y[i][:, 0] == 1).count_nonzero().item()
         ne = (y[i][:, 0] == 0).count_nonzero().item()
@@ -125,43 +127,20 @@ def build_dataset_from_path(path, truncate_canidates, merge_canidates, augmentor
 
     if merge_canidates:
         x, y = torch.cat(x), torch.cat(y)
+        info = np.array(sum(info, []))
 
-    ds = SimpleDataset(x, y, shuffle=False, augmentor=augmentor, info=stats)
+    if not use_info:
+        info = None
+
+    ds = DatasetWithInfo(x, y, info=info, shuffle=False,
+                         augmentor=augmentor, stats=stats)
 
     print(path, stats)
 
     return ds
 
 
-def build_dataset_from_config(dataset_config: DatasetConfig, aug_config: AugmentorConfig, vols):
-
-    # build augmentor
-    augmentor = Augmentor(center=aug_config.center, shuffle=aug_config.shuffle,
-                          rotate=aug_config.rotate, scale=aug_config.scale,
-                          jitter=aug_config.jitter, normalize=aug_config.normalize)
-
-    # build dataset
-    if dataset_config.dataset == 'neurite':
-        dataset = NeuriteDataset(
-            vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices,
-            num_points=dataset_config.num_points, Augmentor=augmentor, open_vol=True,  verbose=dataset_config.verbose, shuffle=True, torch=True)
-    elif dataset_config.dataset == 'slice':
-        dataset = SliceDataset(vols, dataset_config.num_slices, dataset_config.radius, dataset_config.context_slices,
-                               num_points=dataset_config.num_points, Augmentor=augmentor, verbose=False)
-        return dataset
-
-    # split into train and val
-    split = math.floor(len(dataset)*dataset_config.val_split)
-    train_split = list(range(split, len(dataset)-1))
-    val_split = list(range(0, split))
-    ds_train = Subset(dataset, train_split)
-    ds_val = Subset(dataset, val_split)
-    print(f'# train: {len(ds_train)}, # val: {len(ds_val)}')
-
-    return ds_train, ds_val
-
-
-def build_full_model_from_config(model_config: ModelConfig, dataset_config: DatasetConfig):
+def build_full_model_from_config(model_config: ModelConfig, dataset_config: DatasetConfig, epochs):
     # loss
     if model_config.loss == 'nll':
         loss = F.nll_loss
@@ -173,7 +152,7 @@ def build_full_model_from_config(model_config: ModelConfig, dataset_config: Data
         model = PointNet(num_points=dataset_config.num_points,
                          classes=model_config.num_classes)
     elif model_config.model == 'curvenet':
-        model = CurveNet()
+        model = CurveNet(k=model_config.k)
     elif model_config.model == 'transnet':
         model = PointTransformerCls(
             dim=3, num_classes=model_config.num_classes)
@@ -182,8 +161,12 @@ def build_full_model_from_config(model_config: ModelConfig, dataset_config: Data
     if model_config.optimizer == 'AdamW':
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=model_config.learning_rate, betas=(0.9, 0.999), weight_decay=0.05)
+    # scheduler
+    if model_config.scheduler == 'cos':
+        scheduler = CosineAnnealingLR(
+            optimizer, epochs, eta_min=1e-4)
 
-    return model, loss, optimizer
+    return model, loss, optimizer, scheduler
 
 
 def get_config(name):
@@ -196,31 +179,7 @@ def get_config(name):
 CONFIGS = [
     ExperimentConfig('default'),
 
-    ExperimentConfig('CURVENET_ns1_cs_3_m_true_t_4', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=True_ns=1_cs=3_r=96_np=4096_t=0', truncate_canidates=4)),
-
-    ExperimentConfig('TRANSNET_ns1_cs_3_m_true_t_4', model=ModelConfig(model='transnet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=True_ns=1_cs=3_r=96_np=4096_t=0', truncate_canidates=4), augmentor=AugmentorConfig(num_points=2048)),
-
-    ExperimentConfig('CURVENET_ns1_cs_3_m_false_t_4', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=False_ns=1_cs=3_r=96_np=4096_t=0', truncate_canidates=4)),
-
-    ExperimentConfig('CURVENET_ns1_cs_3_m_false_t_4_scale', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=False_ns=1_cs=3_r=96_np=2048_t=0_sc=1000', truncate_canidates=4, scale=True), augmentor=AugmentorConfig(normalize=(6, 1000, 1000))),
-
-    ExperimentConfig('CURVENET_ns1_cs_3_m_true_t_4_scale', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=True_ns=1_cs=3_r=96_np=2048_t=0_sc=1000', truncate_canidates=4, scale=True), augmentor=AugmentorConfig(normalize=(6, 1000, 1000))),
-
-    ExperimentConfig('CURVENET_ns1_cs_3_m_true_t_4_1024', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=True_ns=1_cs=3_r=96_np=4096_t=0', truncate_canidates=4), augmentor=AugmentorConfig(num_points=1024)),
-
-    ExperimentConfig('CURVENET_ns1_cs_3_m_true_t_4_balanced', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=True_ns=1_cs=3_r=96_np=4096_t=0', truncate_canidates=4, balance_samples=True)),
-
-    ExperimentConfig('CURVENET_ns1_cs_2_m_true_t_4', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=True_ns=1_cs=2_r=96_np=2048_t=0_sc=None', truncate_canidates=4)),
-
-    ExperimentConfig('CURVENET_ns1_cs_3_m_true_t_6', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_m=True_ns=1_cs=3_r=96_np=4096_t=0', truncate_canidates=6)),
+    ExperimentConfig('CURVENET_ns1_cs2_t4', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_ns=1_cs=2_sc=None', truncate_canidates=4)),
 
 ]
