@@ -1,6 +1,7 @@
 import numpy as np
 from skimage.transform import resize
 from skimage import color
+from skimage.color import color_dict
 import matplotlib.pyplot as plt
 import IPython
 import math
@@ -131,3 +132,31 @@ def make_histogram(data, bins=20, title='', xlabel='', ylabel='Counts', logscale
         plt.yscale('log', nonposy='clip')
 
     plt.show()
+
+
+def color_segmentation(vol):
+    # vol = vol.reshape()
+    colors = list(color_dict.keys())
+    colors.remove('white')
+    colors.remove('antiquewhite')
+    colors.remove('whitesmoke')
+    colors.remove('ivory')
+    colors.remove('ghostwhite')
+    colors.remove('mintcream')
+    colors.remove('blanchedalmond')
+    colors.remove('lemonchiffon')
+    colors.remove('lightyellow')
+    colors.remove('oldlace')
+    colors.remove('papayawhip')
+    colors.remove('palegoldenrod')
+    colors.remove('navajowhite')
+    colors.remove('wheat')
+    colors.remove('cornsilk')
+    colors.remove('seashell')
+    colors.remove('darkgray')
+    colors.remove('mediumslateblue')
+    colors.remove('lightslategrey')
+    colors.remove('lightgrey')
+    colors.remove('slategray')
+    cvol = color.label2rgb(vol, alpha=1, bg_label=0, colors=colors)
+    return cvol

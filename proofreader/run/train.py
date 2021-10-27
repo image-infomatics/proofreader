@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from proofreader.model.classifier import *
 from proofreader.model.config import *
 from proofreader.utils.torch import *
-from proofreader.run.tools import *
+from proofreader.run.log import *
 from proofreader.data.cremi import prepare_cremi_vols
 
 import numpy as np
@@ -47,7 +47,7 @@ import shutil
               help='number of epochs to train for'
               )
 @click.option('--batch-size', '-b',
-              type=int, default=256,
+              type=int, default=800,
               help='size of mini-batch.'
               )
 @click.option('--num_workers', '-w',
@@ -375,7 +375,7 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
                         # voi
                         if run == 'Test':
                             plot_voi_curve(test_vols, infos,
-                                           y_hats, thresholds, writer, epoch)
+                                           y_hats, thresholds, config.dataset.num_slices, writer, epoch)
 
                         plt.close('all')
 
