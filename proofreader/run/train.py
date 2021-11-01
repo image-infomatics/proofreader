@@ -374,6 +374,7 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
 
                         # voi
                         if run == 'Test':
+                            y_hats = y_hats.cpu().numpy()
                             plot_voi_curve(test_vols, infos,
                                            y_hats, thresholds, config.dataset.num_slices, writer, epoch)
 

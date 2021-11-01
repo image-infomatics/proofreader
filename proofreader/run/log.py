@@ -62,7 +62,7 @@ def build_curve_fig(x, y, labels=None, rm_last=False, config={}):
     if labels is not None:
         for i in range(len(labels)):
             plt.annotate(f"{round(labels[i],3)}", (x[i], y[i]), textcoords="offset points",  xytext=(
-                20, 10),  ha='center')
+                20, 4),  ha='center')
 
     return fig
 
@@ -125,7 +125,6 @@ def plot_voi_curve(vols, infos, y_hats, thresholds, num_slices, writer, epoch):
 
 def do_voi(args):
     vols, infos, y_hats, threshold, num_slices = args
-    y_hats = y_hats.cpu().numpy()
 
     # first init for all vols and drops
     grouped = defaultdict(dict)  # 'vol_i' -> 'drop_start' -> [infos]
