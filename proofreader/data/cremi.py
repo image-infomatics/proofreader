@@ -3,6 +3,7 @@ import os
 import numpy as np
 from proofreader.utils.io import from_h5
 from proofreader.utils.data import zero_classes_with_zspan_less_than, zero_classes_with_min_volume
+import h5py
 
 
 def read_cremi_volume(volname: str, img: bool = False, seg: bool = False, pad: bool = False, path: str = './dataset'):
@@ -70,3 +71,20 @@ def prepare_cremi_vols(path, validation_slices=None):
         return train_vols, val_vols, test_vols
 
     return train_vols, test_vols
+
+
+if __name__ == '__main__':
+
+    dir_path = '/mnt/home/jberman/ceph/cremi'
+
+    for l in ['A', 'B', 'C']:
+        img, seg = read_cremi_volume(
+            l, seg=True, img=True, path='./dataset/cremi')
+        print('l', img.shape, seg.shape)
+        hf = h5py.File(f'{dir_path}/img_{l}.h5', 'w')
+        hf.create_dataset('main', data=img)
+        hf.close()
+
+        hf = h5py.File(f'{dir_path}/seg_{l}.h5', 'w')
+        hf.create_dataset('main', data=seg)
+        hf.close()
