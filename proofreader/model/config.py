@@ -177,13 +177,12 @@ def get_config(name):
 
 CONFIGS = [
     ExperimentConfig('default'),
-
-    ExperimentConfig('CURVENET_ns1_cs2_t4', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_ns=1_cs=2_sc=None', truncate_canidates=4)),
-    ExperimentConfig('CURVENET_ns2_cs2_t4', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_ns=2_cs=2_sc=None', truncate_canidates=4)),
-    ExperimentConfig('CURVENET_ns3_cs2_t4', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_ns=3_cs=2_sc=None', truncate_canidates=4)),
-    ExperimentConfig('CURVENET_ns4_cs2_t4', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
-        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_ns=4_cs=2_sc=None', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns1_cs3_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=1_cs=3', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns2_cs3_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=2_cs=3', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns3_cs3_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=3_cs=3', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns4_cs3_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=4_cs=3', truncate_canidates=4)),
 ]

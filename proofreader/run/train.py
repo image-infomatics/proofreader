@@ -19,6 +19,8 @@ from tqdm import tqdm
 import os
 import random
 import shutil
+from collections import defaultdict
+import json
 
 
 @click.command()
@@ -43,7 +45,7 @@ import shutil
               help='for output'
               )
 @click.option('--epochs', '-e',
-              type=int, default=100,
+              type=int, default=24,
               help='number of epochs to train for'
               )
 @click.option('--batch-size', '-b',
@@ -117,6 +119,12 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
 
     version = 0
     output_dir = f'{output_dir}/{config.name}'
+
+    # global datarecorder to save outside of tensorboard
+    # ''metric' -> [ (x_epoch1, y_epoch1), (x_epoch2, y_epoch2), ...]
+    dglobal_valid = defaultdict(list)
+    dglobal_test = defaultdict(list)
+
     if rank == 0:
         # rm dir if exists then create
         if not overwrite:
@@ -262,14 +270,14 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
             per_example_loss = accumulated_loss / (total_train_batches)
             t_writer.add_scalar('Loss', per_example_loss, epoch)
             plot_merge_curve(all_acc, thresholds, t_writer,
-                             train_dataset.stats, 'merge_curve', epoch)
+                             train_dataset.stats, 'merge_curve', None, epoch)
 
             accumulated_loss = 0.0
             all_acc = {}
 
         # VAL STEP
         if validation_interval != 0 and (epoch+1) % validation_interval == 0:
-            for cur_dataloader, dataset, writer, run in zip([val_dataloader, test_dataloader], [val_dataset, test_dataset], [v_writer, s_writer], ['Val', 'Test']):
+            for cur_dataloader, dataset, writer, dglobal, run in zip([val_dataloader, test_dataloader], [val_dataset, test_dataset], [v_writer, s_writer], [dglobal_valid, dglobal_test], ['Val', 'Test']):
                 accumulated_loss = 0.0
                 all_acc = {}
                 y_hats, ys, bids, infos = [], [], [], []
@@ -364,9 +372,9 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
                                 y_hats, ys, bids, threshold=t)
 
                         plot_merge_curve(
-                            all_acc, thresholds, writer, dataset.stats, 'merge_curve', epoch)
+                            all_acc, thresholds, writer, dataset.stats, 'merge_curve', dglobal, epoch)
                         plot_merge_curve(
-                            max_acc, thresholds, writer, dataset.stats, 'merge_curve_max', epoch)
+                            max_acc, thresholds, writer, dataset.stats, 'merge_curve_max', dglobal, epoch)
 
                         # Normal PR curve
                         writer.add_pr_curve(
@@ -376,7 +384,7 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
                         if run == 'Test':
                             y_hats = y_hats.cpu().numpy()
                             plot_voi_curve(test_vols, infos,
-                                           y_hats, thresholds, config.dataset.num_slices, writer, epoch)
+                                           y_hats, thresholds, config.dataset.num_slices, writer, dglobal, epoch)
 
                         plt.close('all')
 
@@ -385,9 +393,22 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
         model.train()
 
     if rank == 0:
+        # removes defaultdict
+        dglobal_valid = json.loads(json.dumps(dglobal_valid))
+        dglobal_test = json.loads(json.dumps(dglobal_test))
+        # save
+        datadir = os.path.join(output_dir, 'data/')
+        if not os.path.exists(datadir):
+            os.makedirs(datadir)
+
+        np.save(os.path.join(datadir, 'valid.npy'), dglobal_valid)
+        np.save(os.path.join(datadir, 'test.npy'), dglobal_test)
+        # close
         t_writer.close()
         v_writer.close()
         pbar.close()
+
+    print('done!')
 
 
 if __name__ == '__main__':

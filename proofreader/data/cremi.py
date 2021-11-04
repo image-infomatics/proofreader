@@ -2,7 +2,7 @@ import cc3d
 import os
 import numpy as np
 from proofreader.utils.io import from_h5
-from proofreader.utils.data import zero_classes_with_zspan_less_than, zero_classes_with_min_volume
+from proofreader.utils.data import zero_classes_with_zspan_less_than, zero_classes_with_min_volume, crop_where
 import h5py
 
 
@@ -28,6 +28,7 @@ def read_cremi_volume(volname: str, img: bool = False, seg: bool = False, pad: b
 def clean_cremi_vols(vols):
     # we must clean the CREMI vols because they contain noise even in the GT segmentations
     for i in range(len(vols)):
+        vols[i] = crop_where(vols[i], vols[i] != 0)  # remove any border
         vols[i] = zero_classes_with_zspan_less_than(vols[i], 3)
         vols[i] = zero_classes_with_min_volume(vols[i], 800)
         vols[i] = cc3d.connected_components(vols[i])
@@ -61,6 +62,46 @@ def prepare_cremi_vols(path, validation_slices=None):
         val_vols = [trueA_train[vs:].copy(), trueB_train[vs:].copy(),
                     trueC_train[vs:].copy()]
         train_vols = [trueA_train[:vs], trueB_train[:vs], trueC_train[:vs]]
+        # redo connected_components to reconnect neurites
+        val_vols = clean_cremi_vols(val_vols)
+    # redo connected_components to reconnect neurites
+    train_vols = clean_cremi_vols(train_vols)
+    test_vols = clean_cremi_vols(test_vols)
+
+    if validation_slices is not None:
+        return train_vols, val_vols, test_vols
+
+    return train_vols, test_vols
+
+
+def prepare_corrected_cremi_vols(path, validation_slices=None):
+
+    A = from_h5(f'{path}/seg_A.h5')
+    B = from_h5(f'{path}/seg_B.h5')
+    C = from_h5(f'{path}/seg_C.h5')
+
+    # remove any border
+    A = crop_where(A, A != 0)
+    B = crop_where(B, B != 0)
+    C = crop_where(C, C != 0)
+
+    # A is clean
+    A_test = A[:16].copy()
+    A_train = A[16:].copy()
+    B_test = B[:16].copy()
+    B_train = B[16:].copy()
+    C_test = C[:16].copy()
+    C_train = C[16:].copy()
+
+    train_vols = [A_train, B_train, C_train]
+    test_vols = [A_test, B_test, C_test]
+
+    if validation_slices is not None:
+        vs = validation_slices*-1
+        val_vols = [A_train[vs:].copy(), B_train[vs:].copy(),
+                    C_train[vs:].copy()]
+        train_vols = [A_train[:vs].copy(), B_train[:vs].copy(),
+                      C_train[:vs].copy()]
         # redo connected_components to reconnect neurites
         val_vols = clean_cremi_vols(val_vols)
     # redo connected_components to reconnect neurites

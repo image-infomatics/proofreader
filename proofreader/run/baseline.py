@@ -5,6 +5,7 @@ from proofreader.data.cremi import prepare_cremi_vols
 from proofreader.run.log import plot_voi_curve
 from torch.utils.tensorboard import SummaryWriter
 import os
+from collections import defaultdi
 
 
 def test_baseline(num_slices, vols):
@@ -17,12 +18,14 @@ def test_baseline(num_slices, vols):
     # load dataset
     path = f'/mnt/home/jberman/ceph/pf/dataset/DATASET_ns={num_slices}_cs=2_sc=None_test.pt'
     X, Y, I = torch.load(f'{path}')
-    print(len(X),len(Y),len(I))
+    print(len(X), len(Y), len(I))
     # assemble args
     thresholds = [0.9]
     writer = SummaryWriter(log_dir=os.path.join(
         f'/mnt/home/jberman/ceph/pf/baseline/ns_{num_slices}', 'log/baseline'))
     epoch = 1
+
+    dglobal = defaultdict(list)
 
     # build info and y_hats doing merge first method
     infos = []
@@ -33,7 +36,12 @@ def test_baseline(num_slices, vols):
     infos = np.array(infos)
 
     # do voi
-    plot_voi_curve(vols, infos, y_hats, thresholds, num_slices, writer, epoch)
+    plot_voi_curve(vols, infos, y_hats, thresholds,
+                   num_slices, writer, dglobal, epoch)
+
+    dglobal = json.loads(json.dumps(dglobal))
+    np.save(
+        f'/mnt/home/jberman/ceph/pf/baseline/ns_{num_slices}/data/baseline.npy', dglobal)
 
 
 if __name__ == '__main__':

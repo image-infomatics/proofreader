@@ -1,5 +1,5 @@
 from torch.utils.data import DataLoader
-from proofreader.data.cremi import prepare_cremi_vols
+from proofreader.data.cremi import prepare_cremi_vols, prepare_corrected_cremi_vols
 import click
 import torch.multiprocessing
 from proofreader.data.augment import Augmentor
@@ -420,7 +420,6 @@ class SliceDataset(torch.utils.data.IterableDataset):
             label_map = correspond_labels(vol_relabeled, vol, bg_label=0)
 
             # take the neurites on the top border of the missing slices
-            # and attempt to reattach
             top_neurites = np.unique(vol_relabeled[drop_start-1])
             top_neurites = np.delete(top_neurites, 0)
             np.random.shuffle(top_neurites)
@@ -682,7 +681,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
         if worker_info is None:  # single-process data loading, return the full iterator
             return self.build_generator()
         else:  # in a worker process
-            vol = self.get_cur_vol()  # assumes vols all same shape
+            vol = self.get_cur_vol()  # assumes vols all same shape on z
             start, end = self.context_slices, vol.shape[0] - \
                 self.num_slices - self.context_slices
             # split workload
@@ -693,8 +692,8 @@ class SliceDataset(torch.utils.data.IterableDataset):
             iter_end = min(iter_start + per_worker, end)
             drop_start_worker_range = (iter_start, iter_end)
             if iter_start >= iter_end:
-                print(
-                    f'too many workers, not using worker {worker_id}')
+                # print(
+                #     f'too many workers, not using worker {worker_id}')
                 return iter(())
             return self.build_generator(drop_start_worker_range=drop_start_worker_range)
 
@@ -706,11 +705,8 @@ class SliceDataset(torch.utils.data.IterableDataset):
               )
 @click.option('--multiple', '-m',
               type=bool, required=True,
-              help='weather to allow multiple disconnected components on either side'
-              )
-@click.option('--num_slices', '-ns',
-              type=int, required=True,
-              help='num slices to drop'
+              default=True,
+              help='weather to allow multiple disconnected components on either side of gap'
               )
 @click.option('--context_slices', '-cs',
               type=int, required=True,
@@ -734,63 +730,69 @@ class SliceDataset(torch.utils.data.IterableDataset):
               type=int, default=-1,
               help='num workers for pytorch dataloader. -1 means automatically set.'
               )
-def generate_dataset(output_dir: str, multiple: bool, num_slices: int, context_slices: int, num_points: int, radius: int, truncate_candidates: int, scale: int, num_workers: int):
+def generate_dataset(output_dir: str, multiple: bool, context_slices: int, num_points: int, radius: int, truncate_candidates: int, scale: int, num_workers: int):
 
-    name = f'ns={num_slices}_cs={context_slices}_sc={scale}'
+    for num_slices in [1, 2, 3, 4, 5]:
 
-    # auto set
-    if num_workers == -1:
-        num_workers = get_cpu_count()
-    batch_size = 1
+        name = f'aligned_ns={num_slices}_cs={context_slices}'
 
-    # file management
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    file_path = f'{output_dir}/DATASET_{name}'
+        # auto set
+        if num_workers == -1:
+            num_workers = get_cpu_count()
+        batch_size = 1
 
-    print(
-        f'\nname {name}\nbatch_size {batch_size}, num_workers {num_workers}')
-    print(f'file_path {file_path}')
+        # file management
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        file_path = f'{output_dir}/DATASET_{name}'
 
-    print(f'loading volumes...')
-    validation_slices = num_slices + (context_slices*2)+4
-    print('validation_slices', validation_slices)
-    train_vols, val_vols, test_vols = prepare_cremi_vols(
-        './dataset/cremi', validation_slices=validation_slices)
-    print(
-        f'| train {train_vols[0].shape} | val {val_vols[0].shape} | test {test_vols[0].shape} |')
+        print(
+            f'\nname {name}\nbatch_size {batch_size}, num_workers {num_workers}')
+        print(f'file_path {file_path}')
 
-    torch.multiprocessing.set_sharing_strategy('file_system')
-    for vols, name in zip([val_vols, train_vols, test_vols], ['val', 'train', 'test']):
-        print(f'generating data for {name} set...')
+        print(f'loading volumes...')
+        validation_slices = 16
+        print('validation_slices', validation_slices)
+        train_vols, val_vols, test_vols = prepare_corrected_cremi_vols(
+            '/mnt/home/jberman/sc/proofreader/dataset/cremi/corrected', validation_slices=validation_slices)
 
-        dataset = SliceDataset(vols, num_slices, radius, context_slices, num_points=num_points, allow_multiple=multiple, scale=scale,
-                               Augmentor=None, truncate_candidates=truncate_candidates, candidate_group=True, verbose=False)
+        for vols, name in zip([train_vols, val_vols, test_vols], ['train', 'val', 'test']):
+            print(f'{name} shapes')
+            for v in vols:
+                print(v.shape, end=' ')
+            print('')
 
-        def collate_fn(data):
-            assert len(data) == 1, 'only supports batch_size of 1'
-            return data[0]
+        torch.multiprocessing.set_sharing_strategy('file_system')
+        for vols, name in zip([val_vols, train_vols, test_vols], ['val', 'train', 'test']):
+            print(f'generating data for {name} set...')
 
-        iterator = DataLoader(
-            dataset=dataset, batch_size=batch_size, num_workers=num_workers, drop_last=False, collate_fn=collate_fn)
+            dataset = SliceDataset(vols, num_slices, radius, context_slices, num_points=num_points, allow_multiple=multiple, scale=scale,
+                                   Augmentor=None, truncate_candidates=truncate_candidates, candidate_group=True, verbose=False)
 
-        all_x, all_y, all_i = [], [], []
-        for step, batch in tqdm(enumerate(iterator)):
-            x, y, i = batch
-            all_x.append(x)
-            all_y.append(y)
-            all_i.append(i)
+            def collate_fn(data):
+                assert len(data) == 1, 'only supports batch_size of 1'
+                return data[0]
 
-        # set candidate id
-        for i in range(len(all_y)):
-            by = all_y[i]
-            bid = torch.zeros_like(by) + i
-            all_y[i] = torch.stack((by, bid), dim=1)
+            iterator = DataLoader(
+                dataset=dataset, batch_size=batch_size, num_workers=num_workers, drop_last=False, collate_fn=collate_fn)
 
-        print(f'saving batches...')
-        torch.save((all_x, all_y, all_i), f'{file_path}_{name}.pt')
-        print(f'x: {len(all_x)} y: {len(all_y)}')
-        print(f'finished {name}!')
+            all_x, all_y, all_i = [], [], []
+            for step, batch in tqdm(enumerate(iterator)):
+                x, y, i = batch
+                all_x.append(x)
+                all_y.append(y)
+                all_i.append(i)
+
+            # set candidate id
+            for i in range(len(all_y)):
+                by = all_y[i]
+                bid = torch.zeros_like(by) + i
+                all_y[i] = torch.stack((by, bid), dim=1)
+
+            print(f'saving batches...')
+            torch.save((all_x, all_y, all_i), f'{file_path}_{name}.pt')
+            print(f'x: {len(all_x)} y: {len(all_y)}')
+            print(f'finished {name}!')
 
 
 if __name__ == '__main__':

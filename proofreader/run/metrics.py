@@ -358,3 +358,4 @@ def adapted_rand(seg, gt, all_stats=False):
         return (are, precision, recall)
     else:
         return are
+

@@ -67,7 +67,7 @@ def build_curve_fig(x, y, labels=None, rm_last=False, config={}):
     return fig
 
 
-def plot_merge_curve(accs, thresholds, writer, dataset_stats, tag, epoch):
+def plot_merge_curve(accs, thresholds, writer, dataset_stats, tag, dglobal, epoch):
 
     total_neurites = dataset_stats['total_neurites']
     merge_opps = dataset_stats['merge_opportunities']
@@ -85,6 +85,10 @@ def plot_merge_curve(accs, thresholds, writer, dataset_stats, tag, epoch):
         tn.append(t_acc['true_negative'])
         fn.append(t_acc['false_negative'])
 
+    # write global data
+    if dglobal is not None:
+        dglobal[tag].append((succ, err))
+
     # merge curve
     writer.add_pr_curve_raw(tag, tp, fp, tn, fn,
                             succ, err, global_step=epoch, num_thresholds=len(thresholds))
@@ -96,7 +100,7 @@ def plot_merge_curve(accs, thresholds, writer, dataset_stats, tag, epoch):
                       global_step=epoch)
 
 
-def plot_voi_curve(vols, infos, y_hats, thresholds, num_slices, writer, epoch):
+def plot_voi_curve(vols, infos, y_hats, thresholds, num_slices, writer, dglobal, epoch):
     print('computing voi curve...')
 
     # multithreaded
@@ -113,6 +117,8 @@ def plot_voi_curve(vols, infos, y_hats, thresholds, num_slices, writer, epoch):
         voi_config['title'] = f'{title} per Threshold'
         fig = build_curve_fig(thresholds, data, labels=data, config=voi_config)
         writer.add_figure(f'{title}_Curve', fig, global_step=epoch)
+        # write global data
+        dglobal[title].append((thresholds, data))
 
     # log border examples
     for t, border in zip(thresholds, borders):
