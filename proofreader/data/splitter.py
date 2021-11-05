@@ -732,7 +732,7 @@ class SliceDataset(torch.utils.data.IterableDataset):
               )
 def generate_dataset(output_dir: str, multiple: bool, context_slices: int, num_points: int, radius: int, truncate_candidates: int, scale: int, num_workers: int):
 
-    for num_slices in [1, 2, 3, 4, 5]:
+    for num_slices in [9, 10, 11, 12]:
 
         name = f'aligned_ns={num_slices}_cs={context_slices}'
 

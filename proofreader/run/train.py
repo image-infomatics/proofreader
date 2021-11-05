@@ -65,6 +65,9 @@ import json
 @click.option('--test-interval', '-s',
               type=int, default=1, help='interval when to run full test.'
               )
+@click.option('--test',
+              type=bool, default=False, help='whether to just run inference.'
+              )
 @click.option('--load',
               type=str, default=None, help='load from checkpoint, pass path to ckpt file'
               )
@@ -93,7 +96,7 @@ def train_parallel(rank, world_size, kwargs):
 
 
 def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, epochs: int, batch_size: int, num_workers: int,
-          training_interval: int, validation_interval: int, test_interval: int,
+          training_interval: int, validation_interval: int, test_interval: int, test: bool,
           load: str, ddp: bool, rank: int = 0, world_size: int = 1):
 
     print('\nstarting...')
@@ -120,11 +123,14 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
     version = 0
     output_dir = f'{output_dir}/{config.name}'
 
+    if test:
+        output_dir = f'{output_dir}_INFER'
     # global datarecorder to save outside of tensorboard
     # ''metric' -> [ (x_epoch1, y_epoch1), (x_epoch2, y_epoch2), ...]
     dglobal_valid = defaultdict(list)
     dglobal_test = defaultdict(list)
 
+    t_writer, v_writer, s_writer = None, None, None
     if rank == 0:
         # rm dir if exists then create
         if not overwrite:
@@ -154,7 +160,7 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
     print('building dataset...')
     if config.dataset.path is not None:
         train_dataset, val_dataset, test_dataset = load_dataset_from_disk(
-            config.dataset, config.augmentor)
+            config.dataset, config.augmentor, test=test)
 
     # get vols for voi
     train_vols, test_vols = prepare_cremi_vols(
@@ -230,50 +236,51 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
         accumulated_loss = 0.0
         all_acc = {}
         # TRAIN EPOCH
-        for step, batch in enumerate(train_dataloader):
+        if not test:
+            for step, batch in enumerate(train_dataloader):
 
-            # get batch
-            x, y = batch
+                # get batch
+                x, y = batch
 
-            optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad(set_to_none=True)
 
-            bid = y[..., 1]
-            y = y[..., 0]
+                bid = y[..., 1]
+                y = y[..., 0]
 
-            if use_gpu:
-                x = x.cuda(rank, non_blocking=True)
-                y = y.cuda(rank, non_blocking=True)
+                if use_gpu:
+                    x = x.cuda(rank, non_blocking=True)
+                    y = y.cuda(rank, non_blocking=True)
 
-            # foward pass
-            y_hat = model(x)
+                # foward pass
+                y_hat = model(x)
 
-            # compute loss
-            loss = loss_module(y_hat, y)
+                # compute loss
+                loss = loss_module(y_hat, y)
 
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
 
-            cur_loss = loss.item()
-            accumulated_loss += cur_loss
-            for t in thresholds:
-                pred = predict_class(y_hat, true_threshold=t)
-                acc = count_succ_and_errs(y, pred)
-                all_acc[t] = {k: acc.get(k, 0) + all_acc.get(t, {}).get(k, 0)
-                              for k in set(acc)}
+                cur_loss = loss.item()
+                accumulated_loss += cur_loss
+                for t in thresholds:
+                    pred = predict_class(y_hat, true_threshold=t)
+                    acc = count_succ_and_errs(y, pred)
+                    all_acc[t] = {k: acc.get(k, 0) + all_acc.get(t, {}).get(k, 0)
+                                  for k in set(acc)}
 
-            # record progress / metrics
+                # record progress / metrics
+                if rank == 0:
+                    pbar.update(1)
+
             if rank == 0:
-                pbar.update(1)
+                per_example_loss = accumulated_loss / (total_train_batches)
+                t_writer.add_scalar('Loss', per_example_loss, epoch)
+                plot_merge_curve(all_acc, thresholds, t_writer,
+                                 train_dataset.stats, 'merge_curve', None, epoch)
 
-        if rank == 0:
-            per_example_loss = accumulated_loss / (total_train_batches)
-            t_writer.add_scalar('Loss', per_example_loss, epoch)
-            plot_merge_curve(all_acc, thresholds, t_writer,
-                             train_dataset.stats, 'merge_curve', None, epoch)
-
-            accumulated_loss = 0.0
-            all_acc = {}
+                accumulated_loss = 0.0
+                all_acc = {}
 
         # VAL STEP
         if validation_interval != 0 and (epoch+1) % validation_interval == 0:
@@ -318,16 +325,12 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
                                         mesh = torch.swapaxes(
                                             x[indices['false_positive']][:1], -1, -2)
                                         mesh_err.append(mesh[0])
-                                        # writer.add_mesh(
-                                        #     'false_positive_pc', mesh, global_step=epoch)
 
                                     # miss the merge
                                     if acc['false_negative'] >= 1:
                                         mesh = torch.swapaxes(
                                             x[indices['false_negative']][:1], -1, -2)
                                         mesh_miss.append(mesh[0])
-                                        # writer.add_mesh(
-                                        #     'false_negative_pc', mesh, global_step=epoch)
 
                             else:
                                 acc = count_succ_and_errs(y, pred)

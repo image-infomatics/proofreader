@@ -1,3 +1,4 @@
+import random
 import matplotlib.pyplot as plt
 from proofreader.run.metrics import voi, adapted_rand
 from proofreader.utils.vis import color_segmentation
@@ -5,6 +6,7 @@ from collections import defaultdict
 from multiprocessing.pool import ThreadPool
 import numpy as np
 import networkx as nx
+from skimage.segmentation import find_boundaries
 
 pr_config = {'xlabel': 'Error', 'ylabel': 'Success',
              'title': 'Merge Error and Success for Thresholds',
@@ -122,7 +124,8 @@ def plot_voi_curve(vols, infos, y_hats, thresholds, num_slices, writer, dglobal,
 
     # log border examples
     for t, border in zip(thresholds, borders):
-        colored = color_segmentation(border)
+        colored = color_segmentation(
+            border, colors=['tomato', 'forestgreen', 'cornflowerblue'])
         writer.add_image(f'border_seg/{t}', colored,
                          global_step=epoch, dataformats='HWC')
 
@@ -144,8 +147,8 @@ def do_voi(args):
 
     # get total voi
     split_total, merge_total, arand_total = 0, 0, 0
-    ret_border = None
     num_drops = 0
+    borders = []
     for (vol_i, drops) in grouped.items():
         num_drops += len(drops)
         # multithreaded
@@ -158,19 +161,22 @@ def do_voi(args):
             split_total += split
             merge_total += merge
             arand_total += arand
-            ret_border = border
+            borders.append(border)
 
     (avg_split, avg_merge, avg_arand) = split_total / \
         num_drops, merge_total/num_drops, arand_total/num_drops
 
+    ret_border = random.choice(borders)
     return (avg_merge+avg_split, avg_split, avg_merge, avg_arand, ret_border)
 
 
 def compute_voi_for_drop(args):
     vol, drop_start, drop_end, true_infos = args
+    max_l = int(np.max(vol))*4
+    wrong, right, neither, bound = max_l, max_l+1, max_l+2, 0
 
     # create gt segmentation and split segmentation
-    gt = vol.copy()
+    gt = vol.copy()  # avoid label collision with wrong, right, none
     gt[drop_start:drop_end] = 0  # drop slices from gt
     zeros = gt == 0  # retain zero mask
     split = gt.copy()
@@ -184,6 +190,11 @@ def compute_voi_for_drop(args):
         bot_c = info['bot_class'] + offset
         merges.append([top_c, bot_c])
 
+    # add top/bot slice to view post intervention segmentation
+    border = np.concatenate([split[drop_start-1], split[drop_end]])
+    bzeros = border == 0
+    border_boundries = find_boundaries(border, mode='thick')
+
     # combine all merges, any merge which have a nonempty intersection should be merged
     # basically like graph connected components
     if len(merges) > 0:
@@ -194,14 +205,31 @@ def compute_voi_for_drop(args):
             mask = np.isin(split, m)
             split[mask] = new_label
 
+            # to build image to view post intervention segmentation
+            num_gt = len(np.unique(gt[mask]))
+            is_error_in_merge = num_gt > 1
+            bmask = np.isin(border, m)
+            if is_error_in_merge:
+                border[bmask] = wrong
+            else:
+                border[bmask] = right
+
+    # mark where no attempt was made
+    no_mask = ~(np.isin(border, [wrong, right]))
+    border[no_mask] = neither
+    # add prev boundries
+    border[border_boundries] = bound
+    border[bzeros] = bound
+    # hack to ensure coloring happens correctly
+    border[0, 0] = wrong
+    border[0, 1] = right
+    border[0, 2] = neither
+
     # add back previous zeros
     split[zeros] = 0
     # measure voi and arand after intervention
     (split_post, merge_post) = voi(split, gt)
     arand = adapted_rand(split, gt)
-
-    # add top/bot slice to view post intervention segmentation
-    border = np.concatenate([split[drop_start-1], split[drop_end]])
 
     return (split_post, merge_post, arand, border)
 
