@@ -179,6 +179,8 @@ def compute_voi_for_drop(args):
     gt = vol.copy()  # avoid label collision with wrong, right, none
     gt[drop_start:drop_end] = 0  # drop slices from gt
     zeros = gt == 0  # retain zero mask
+    z_btop = gt[drop_start - 1] == 0
+    z_bbot = gt[drop_end] == 0  # zeros for border
     split = gt.copy()
     offset = int(np.max(gt))+1  # relabel bot section for split
     split[drop_end:] += offset
@@ -191,8 +193,8 @@ def compute_voi_for_drop(args):
         merges.append([top_c, bot_c])
 
     # add top/bot slice to view post intervention segmentation
+    blen = split[drop_end].shape[0]
     border = np.concatenate([split[drop_start-1], split[drop_end]])
-    bzeros = border == 0
     border_boundries = find_boundaries(border, mode='thick')
 
     # combine all merges, any merge which have a nonempty intersection should be merged
@@ -219,7 +221,8 @@ def compute_voi_for_drop(args):
     border[no_mask] = neither
     # add prev boundries
     border[border_boundries] = bound
-    border[bzeros] = bound
+    border[:blen][z_btop] = bound
+    border[blen:][z_bbot] = bound
     # hack to ensure coloring happens correctly
     border[0, 0] = wrong
     border[0, 1] = right

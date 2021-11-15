@@ -210,9 +210,9 @@ def train(config: str, overwrite: bool, path: str, seed: int, output_dir: str, e
     train_dataloader = DataLoader(dataset=train_dataset, batch_size=batch_size,
                                   num_workers=num_workers-val_workers, pin_memory=pin_memory, sampler=train_sampler, drop_last=True, shuffle=(train_sampler is None))
     val_dataloader = DataLoader(dataset=val_dataset, batch_size=batch_size,
-                                num_workers=val_workers, pin_memory=pin_memory, sampler=val_sampler, drop_last=False, shuffle=(val_sampler is None), collate_fn=collate_info)
+                                num_workers=val_workers, pin_memory=pin_memory, sampler=val_sampler, drop_last=True, shuffle=(val_sampler is None), collate_fn=collate_info)
     test_dataloader = DataLoader(dataset=test_dataset, batch_size=batch_size,
-                                 num_workers=val_workers, pin_memory=pin_memory, sampler=test_sampler, drop_last=False, shuffle=(test_sampler is None), collate_fn=collate_info)
+                                 num_workers=val_workers, pin_memory=pin_memory, sampler=test_sampler, drop_last=True, shuffle=(test_sampler is None), collate_fn=collate_info)
 
     total_train_batches = len(train_dataloader)
 

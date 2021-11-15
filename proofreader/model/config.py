@@ -186,6 +186,16 @@ CONFIGS = [
     # cs1
     ExperimentConfig('CURVENET_ns1_cs1_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
         path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=1_cs=1', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns2_cs1_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=2_cs=1', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns3_cs1_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=3_cs=1', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns4_cs1_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=4_cs=1', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns5_cs1_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=5_cs=1', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns6_cs1_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=6_cs=1', truncate_canidates=4)),
 
     # cs2
     ExperimentConfig('CURVENET_ns1_cs2_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
@@ -198,7 +208,8 @@ CONFIGS = [
         path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=4_cs=2', truncate_canidates=4)),
     ExperimentConfig('CURVENET_ns5_cs2_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
         path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=5_cs=2', truncate_canidates=4)),
-
+    ExperimentConfig('CURVENET_ns6_cs2_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=6_cs=2', truncate_canidates=4)),
     # cs3
     ExperimentConfig('CURVENET_ns4_cs3_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
         path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=4_cs=3', truncate_canidates=4)),
@@ -210,6 +221,14 @@ CONFIGS = [
         path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=7_cs=3', truncate_canidates=4)),
     ExperimentConfig('CURVENET_ns8_cs3_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
         path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=8_cs=3', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns9_cs3_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=9_cs=3', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns10_cs3_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=10_cs=3', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns11_cs3_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=11_cs=3', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns12_cs3_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=12_cs=3', truncate_canidates=4)),
 
     # cs4
     ExperimentConfig('CURVENET_ns1_cs4_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
@@ -222,4 +241,52 @@ CONFIGS = [
         path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=4_cs=4', truncate_canidates=4)),
     ExperimentConfig('CURVENET_ns5_cs4_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
         path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=5_cs=4', truncate_canidates=4)),
+    ExperimentConfig('CURVENET_ns6_cs4_t4_aligned', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=6_cs=4', truncate_canidates=4)),
+
+    # cs2 ns3 num points
+    ExperimentConfig('CURVENET_ns3_cs2_t4_aligned_1024', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=3_cs=2', truncate_canidates=4, num_points=1024), augmentor=AugmentorConfig(num_points=1024)),
+    ExperimentConfig('CURVENET_ns3_cs2_t4_aligned_512', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=3_cs=2', truncate_canidates=4, num_points=512), augmentor=AugmentorConfig(num_points=512)),
+    ExperimentConfig('CURVENET_ns3_cs2_t4_aligned_256', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=3_cs=2', truncate_canidates=4, num_points=256), augmentor=AugmentorConfig(num_points=256)),
+    ExperimentConfig('CURVENET_ns3_cs2_t4_aligned_128', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=3_cs=2', truncate_canidates=4, num_points=128), augmentor=AugmentorConfig(num_points=128)),
+    ExperimentConfig('CURVENET_ns3_cs2_t4_aligned_64', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=3_cs=2', truncate_canidates=4, num_points=64), augmentor=AugmentorConfig(num_points=64)),
+    ExperimentConfig('CURVENET_ns3_cs2_t4_aligned_32', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=3_cs=2', truncate_canidates=4, num_points=32), augmentor=AugmentorConfig(num_points=32)),
+    ExperimentConfig('CURVENET_ns3_cs2_t4_aligned_16', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=3_cs=2', truncate_canidates=4, num_points=16), augmentor=AugmentorConfig(num_points=16)),
+
+    # cs2 ns1 num points
+    ExperimentConfig('CURVENET_ns1_cs2_t4_aligned_1024', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=1_cs=2', truncate_canidates=4, num_points=1024), augmentor=AugmentorConfig(num_points=1024)),
+    ExperimentConfig('CURVENET_ns1_cs2_t4_aligned_512', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=1_cs=2', truncate_canidates=4, num_points=512), augmentor=AugmentorConfig(num_points=512)),
+    ExperimentConfig('CURVENET_ns1_cs2_t4_aligned_256', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=1_cs=2', truncate_canidates=4, num_points=256), augmentor=AugmentorConfig(num_points=256)),
+    ExperimentConfig('CURVENET_ns1_cs2_t4_aligned_128', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=1_cs=2', truncate_canidates=4, num_points=128), augmentor=AugmentorConfig(num_points=128)),
+    ExperimentConfig('CURVENET_ns1_cs2_t4_aligned_64', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=1_cs=2', truncate_canidates=4, num_points=64), augmentor=AugmentorConfig(num_points=64)),
+    ExperimentConfig('CURVENET_ns1_cs2_t4_aligned_32', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=1_cs=2', truncate_canidates=4, num_points=32), augmentor=AugmentorConfig(num_points=32)),
+
+
+    # cs2 ns5 num points
+    ExperimentConfig('CURVENET_ns5_cs2_t4_aligned_1024', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=5_cs=2', truncate_canidates=4, num_points=1024), augmentor=AugmentorConfig(num_points=1024)),
+    ExperimentConfig('CURVENET_ns5_cs2_t4_aligned_512', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=5_cs=2', truncate_canidates=4, num_points=512), augmentor=AugmentorConfig(num_points=512)),
+    ExperimentConfig('CURVENET_ns5_cs2_t4_aligned_256', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=5_cs=2', truncate_canidates=4, num_points=256), augmentor=AugmentorConfig(num_points=256)),
+    ExperimentConfig('CURVENET_ns5_cs2_t4_aligned_128', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=5_cs=2', truncate_canidates=4, num_points=128), augmentor=AugmentorConfig(num_points=128)),
+    ExperimentConfig('CURVENET_ns5_cs2_t4_aligned_64', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=5_cs=2', truncate_canidates=4, num_points=64), augmentor=AugmentorConfig(num_points=64)),
+    ExperimentConfig('CURVENET_ns5_cs2_t4_aligned_32', model=ModelConfig(model='curvenet'), dataset=DatasetConfig(
+        path='/mnt/home/jberman/ceph/pf/dataset/DATASET_aligned_ns=5_cs=2', truncate_canidates=4, num_points=32), augmentor=AugmentorConfig(num_points=32)),
+
 ]
